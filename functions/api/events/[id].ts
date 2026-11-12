@@ -17,6 +17,7 @@ import {
   roomOfGame,
   type Context,
 } from '../../../server/lib';
+import { appealCard, appealResultCard } from '../../../server/discord';
 
 export async function onRequest({ request, env, params }: Context): Promise<Response> {
   const db = await database(env);
@@ -57,7 +58,7 @@ export async function onRequest({ request, env, params }: Context): Promise<Resp
       .prepare("INSERT INTO appeals (event_id, user_id, reason, status, created_at) VALUES (?, ?, ?, 'pending', ?)")
       .bind(id, user.id, reason, Date.now())
       .run();
-    await announce(db, room, `🙋 **${user.username}** pide anular un evento${reason ? `: “${reason}”` : ''}. Lo decide el líder de la sala.`);
+    await announce(db, room, appealCard(user.username, reason));
     return json({ ok: true });
   }
 
@@ -65,7 +66,7 @@ export async function onRequest({ request, env, params }: Context): Promise<Resp
 
   if (request.method === 'PUT') {
     await db.prepare("UPDATE appeals SET status = 'rejected' WHERE event_id = ?").bind(id).run();
-    await announce(db, room, `🚫 Pedido de anulación de **${event.username ?? '?'}** rechazado. La baja se queda.`);
+    await announce(db, room, appealResultCard(event.username ?? '?', false));
     return json({ ok: true });
   }
 
@@ -75,7 +76,7 @@ export async function onRequest({ request, env, params }: Context): Promise<Resp
       db.prepare('DELETE FROM appeals WHERE event_id = ?').bind(id),
       db.prepare('DELETE FROM events WHERE id = ?').bind(id),
     ]);
-    if (appeal) await announce(db, room, `✅ Pedido de anulación de **${event.username ?? '?'}** aprobado.`);
+    if (appeal) await announce(db, room, appealResultCard(event.username ?? '?', true));
     return json({ ok: true });
   }
 

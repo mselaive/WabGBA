@@ -16,7 +16,7 @@ import {
   roomOfGame,
   type Context,
 } from '../../../server/lib';
-import { speciesName } from '../../../src/species';
+import { deathCard } from '../../../server/discord';
 
 interface Row {
   id: number;
@@ -124,16 +124,12 @@ export async function onRequest({ request, env }: Context): Promise<Response> {
       .first<{ n: number }>();
     const left = room.lives - (deaths?.n ?? 0);
 
-    const name = speciesName(species);
-    const who =
-      data.nickname && data.nickname.toLowerCase() !== name.toLowerCase()
-        ? `**${data.nickname}** (${name}, nv ${level})`
-        : `**${name}** (nv ${level})`;
-    const versus = data.enemy
-      ? ` contra un ${speciesName(data.enemy.species!)}${data.enemy.wild ? ' salvaje' : ''} nv ${data.enemy.level}`
-      : '';
-    const closing = left > 0 ? `Le quedan ${left} ${left === 1 ? 'vida' : 'vidas'}.` : '☠️ **Se quedó sin vidas.**';
-    await announce(db, room, `💀 **${user.username}** perdió a ${who}${versus}. ${closing}`, image);
+    await announce(
+      db,
+      room,
+      deathCard({ username: user.username, species, level, nickname: data.nickname, enemy: data.enemy, poisoned: data.poisoned, left, lives: room.lives }),
+      image,
+    );
     return json({ ok: true, left });
   }
 

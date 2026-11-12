@@ -1,4 +1,5 @@
 // Código compartido por las Pages Functions de /api (cuentas y partidas, sobre D1).
+import { payloadFor, type Card } from './discord';
 
 export interface D1Statement {
   bind(...values: unknown[]): D1Statement;
@@ -291,11 +292,11 @@ export const isDiscordWebhook = (url: string) =>
   /^https:\/\/(discord|discordapp)\.com\/api\/webhooks\/\d+\/[\w-]+$/.test(url);
 
 /** Publica un aviso en el canal de Discord de la sala. Nunca hace fallar al que llama. */
-export async function announce(db: D1, room: Room | null, text: string, image?: ArrayBuffer | null): Promise<void> {
+export async function announce(db: D1, room: Room | null, card: Card, image?: ArrayBuffer | null): Promise<void> {
   try {
     const url = room?.discord;
-    if (!url || !isDiscordWebhook(url)) return;
-    const payload = { username: 'WabGBA', content: text.slice(0, 1900) };
+    if (!room || !url || !isDiscordWebhook(url)) return;
+    const payload = payloadFor(room.name, card, !!image);
     if (image) {
       const form = new FormData();
       form.append('payload_json', JSON.stringify(payload));

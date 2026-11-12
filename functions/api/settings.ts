@@ -13,6 +13,7 @@ import {
   requestedRoom,
   type Context,
 } from '../../server/lib';
+import { connectedCard } from '../../server/discord';
 
 export async function onRequest({ request, env }: Context): Promise<Response> {
   const db = await database(env);
@@ -37,11 +38,7 @@ export async function onRequest({ request, env }: Context): Promise<Response> {
 
     await db.prepare('UPDATE rooms SET lives = ?, discord = ? WHERE id = ?').bind(lives, webhook, room.id).run();
     if (webhook && webhook !== room.discord) {
-      await announce(
-        db,
-        { ...room, discord: webhook },
-        `🎮 WabGBA quedó conectado a este canal para la sala **${room.name}**. Acá van a caer las muertes, las medallas y los torneos.`,
-      );
+      await announce(db, { ...room, discord: webhook }, connectedCard(room.name));
     }
     return json({ ok: true });
   }

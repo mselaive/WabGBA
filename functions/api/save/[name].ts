@@ -19,7 +19,7 @@ import {
   type Room,
   type User,
 } from '../../../server/lib';
-import { BADGES } from '../../../src/achievements';
+import { badgeCard, championCard, resetCard, tournamentCard } from '../../../server/discord';
 import { readSave, type Progress } from '../../../src/save';
 
 const MAX_BYTES = 1024 * 1024;
@@ -39,12 +39,12 @@ async function announceProgress(db: D1, room: Room, user: User, game: string, be
   for (let i = 0; i < 8; i++) {
     if (!now.badges[i] || before?.badges[i]) continue;
     if (await addEvent(db, user.id, 'badge', `${game}:badge:${i + 1}`, { game, n: i + 1 })) {
-      await announce(db, room, `🏅 **${user.username}** consiguió la Medalla ${BADGES[i]} (${now.badgeCount}/8).`);
+      await announce(db, room, badgeCard(user.username, i + 1, now.badgeCount));
     }
   }
   if (now.champion && !before?.champion) {
     if (await addEvent(db, user.id, 'champion', `${game}:champion`, { game })) {
-      await announce(db, room, `👑 **${user.username}** venció a la Liga. ¡Campeón!`);
+      await announce(db, room, championCard(user.username));
     }
   }
 
@@ -61,7 +61,7 @@ async function announceProgress(db: D1, room: Room, user: User, game: string, be
     // Va a nombre del sitio (cuenta 0), así se anota una sola vez.
     const names = players.map((p) => p.username);
     if (await addEvent(db, 0, 'tournament', `${game}:tournament:${n}`, { game, n, players: names })) {
-      await announce(db, room, `⚔️ **¡Torneo!** Todos llegaron a las ${n} medallas: ${names.join(', ')}. A pelear.`);
+      await announce(db, room, tournamentCard(n, names));
     }
   }
 }
@@ -138,7 +138,7 @@ export async function onRequest({ request, env, params }: Context): Promise<Resp
       db.prepare('DELETE FROM game_saves WHERE user_id = ? AND name = ?').bind(user.id, name),
       db.prepare("DELETE FROM events WHERE user_id = ? AND key LIKE ? || ':%'").bind(user.id, name),
     ]);
-    await announce(db, await roomOfGame(db, name), `🔄 **${user.username}** reinició su partida. Borrón y cuenta nueva.`);
+    await announce(db, await roomOfGame(db, name), resetCard(user.username));
     return json({ ok: true });
   }
 
