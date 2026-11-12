@@ -1468,7 +1468,26 @@ function renderRooms() {
           }
         };
         line.append(input, set);
-        row.append(line);
+
+        // Puede administrar la sala sin jugar en ella: así no figura entre los participantes.
+        const part = el('div', 'row');
+        const toggle = el('button', 'px-btn small', room.member ? 'DEJAR DE PARTICIPAR' : 'PARTICIPAR YO TAMBIÉN');
+        toggle.type = 'button';
+        toggle.onclick = async () => {
+          try {
+            applyRooms(await sync.updateRoom(room.id, { member: !room.member }), sync.getRoom());
+            renderRooms();
+            roomsStatus(
+              room.member
+                ? `Ya no figurás como participante de ${room.name}. La seguís administrando.`
+                : `Ahora participás en ${room.name}.`,
+            );
+          } catch (e) {
+            roomsStatus(sync.describe(e), true);
+          }
+        };
+        part.append(el('small', '', room.member ? 'Participás en esta sala.' : 'No participás: sólo la administrás.'), toggle);
+        row.append(line, part);
       }
       return row;
     }),
@@ -1504,7 +1523,9 @@ async function createRoom() {
     code.value = '';
     renderRooms();
     void showRules();
-    roomsStatus(`Sala creada. Ya estás parado en ${currentRoom()?.name ?? 'ella'}: subile su ROM desde JUGAR.`);
+    roomsStatus(
+      `Sala creada. Ya estás parado en ${currentRoom()?.name ?? 'ella'}: subile su ROM desde JUGAR. No figurás como participante salvo que lo pidas.`,
+    );
   } catch (e) {
     roomsStatus(sync.describe(e), true);
   }

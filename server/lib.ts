@@ -258,13 +258,18 @@ export async function requestedRoom(db: D1, request: Request, user: User): Promi
 export async function roomsFor(db: D1, user: User) {
   const sql =
     'SELECT r.id AS id, r.name AS name, r.code AS code, r.leader_id AS leader_id, r.lives AS lives, ' +
-    'u.username AS leader FROM rooms r LEFT JOIN users u ON u.id = r.leader_id ';
-  const { results } = user.admin
-    ? await db.prepare(sql + 'ORDER BY r.id').all<Room & { leader: string | null }>()
-    : await db
-        .prepare(sql + 'JOIN room_members m ON m.room_id = r.id WHERE m.user_id = ? ORDER BY r.id')
-        .bind(user.id)
-        .all<Room & { leader: string | null }>();
+    'u.username AS leader, ' +
+    '(SELECT COUNT(*) FROM room_members m WHERE m.room_id = r.id AND m.user_id = ?1) AS member ' +
+    'FROM rooms r LEFT JOIN users u ON u.id = r.leader_id ';
+  // Quien administra el sitio ve todas, participe o no.
+  const { results } = await db
+    .prepare(
+      sql +
+        (user.admin ? '' : 'WHERE r.id IN (SELECT room_id FROM room_members WHERE user_id = ?1) ') +
+        'ORDER BY r.id',
+    )
+    .bind(user.id)
+    .all<Room & { leader: string | null; member: number }>();
   return results.map((r) => {
     const moderator = user.admin || r.leader_id === user.id;
     return {
@@ -274,6 +279,8 @@ export async function roomsFor(db: D1, user: User) {
       leader: r.leader,
       /** Esta cuenta decide las reglas y las anulaciones de la sala. */
       moderator,
+      /** Esta cuenta juega en la sala (quien administra el sitio puede entrar sin jugar). */
+      member: r.member > 0,
       ...(moderator ? { code: r.code } : {}),
     };
   });

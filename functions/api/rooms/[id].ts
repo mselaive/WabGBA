@@ -1,10 +1,12 @@
-// PUT /api/rooms/<id> { name?, code?, leader? } -> { rooms }
+// PUT /api/rooms/<id> { name?, code?, leader?, member? } -> { rooms }
+// `member` (true/false) suma o saca de la sala a la propia cuenta que administra.
 // Sólo quien administra el sitio: renombra la sala, cambia su código o nombra a su líder.
 // `leader` es un nombre de usuario que ya esté en la sala, o vacío para dejarla sin líder.
 import {
   currentUser,
   database,
   isMember,
+  joinRoom,
   json,
   normalizeCode,
   readBody,
@@ -40,6 +42,12 @@ export async function onRequestPut({ request, env, params }: Context): Promise<R
   }
 
   let leaderId = room.leader_id;
+  // Quien administra el sitio decide si además juega en la sala.
+  if (body.member === true) await joinRoom(db, room.id, user.id);
+  if (body.member === false) {
+    await db.prepare('DELETE FROM room_members WHERE room_id = ? AND user_id = ?').bind(room.id, user.id).run();
+    if (leaderId === user.id) leaderId = null;
+  }
   if (typeof body.leader === 'string') {
     const username = body.leader.trim().toLowerCase();
     if (!username) leaderId = null;

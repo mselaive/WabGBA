@@ -188,6 +188,8 @@ export interface RoomInfo {
   leader: string | null;
   /** Esta cuenta decide las reglas y las anulaciones de la sala. */
   moderator: boolean;
+  /** Esta cuenta juega en la sala (quien administra el sitio puede entrar sin jugar). */
+  member: boolean;
   /** El código de invitación; sólo le llega a quien puede invitar. */
   code?: string;
 }
@@ -228,7 +230,7 @@ export async function joinRoom(code: string): Promise<{ rooms: RoomInfo[]; joine
 /** Cambia nombre, código o líder de una sala (sólo quien administra el sitio). */
 export async function updateRoom(
   id: number,
-  changes: { name?: string; code?: string; leader?: string },
+  changes: { name?: string; code?: string; leader?: string; member?: boolean },
 ): Promise<RoomInfo[]> {
   const res = await okJson(await call(`rooms/${id}`, postJson(changes, 'PUT')));
   return ((await res.json()) as { rooms: RoomInfo[] }).rooms;

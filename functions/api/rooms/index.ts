@@ -6,7 +6,6 @@ import {
   DEFAULT_LIVES,
   currentUser,
   database,
-  joinRoom,
   json,
   normalizeCode,
   readBody,
@@ -35,8 +34,9 @@ export async function onRequest({ request, env }: Context): Promise<Response> {
       .prepare("INSERT INTO rooms (name, code, leader_id, lives, discord, created_at) VALUES (?, ?, NULL, ?, '', ?)")
       .bind(name, code, DEFAULT_LIVES, Date.now())
       .run();
+    // Quien la crea no queda como participante: puede ser la sala de otra gente.
+    // Si quiere jugar en ella, se suma después.
     const room = await roomByCode(db, code);
-    if (room) await joinRoom(db, room.id, user.id);
     return json({ rooms: await roomsFor(db, user), created: room?.id ?? null });
   }
 
