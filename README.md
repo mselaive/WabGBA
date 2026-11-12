@@ -14,9 +14,14 @@ Emulador de Game Boy Advance en el navegador, de uso personal. Corre sobre
   dentro del juego y se baja al abrirlo en otro dispositivo. Cada cuenta tiene su propia
   partida, aunque todos usen la misma ROM. Si dos dispositivos cambiaron, pregunta cuál
   conservar.
-- **Logros** para Pokémon Rojo Fuego / Verde Hoja: medallas, Liga, Pokédex, equipo y más.
-  Se leen del `.sav` cada vez que guardás dentro del juego (`src/save.ts`). Para sumar uno
-  nuevo, agregalo en `src/achievements.ts`.
+- **Misiones y logros** para Pokémon Rojo Fuego / Verde Hoja: medallas, Liga, Pokédex,
+  equipo y más. Se leen del `.sav` cada vez que guardás dentro del juego (`src/save.ts`).
+  Cada uno da experiencia, que sube el rango de entrenador. Las misiones son los mismos
+  logros agrupados en cadenas; para sumar uno nuevo, agregalo en `src/achievements.ts`.
+- **Participantes:** ranking de todas las cuentas con sus medallas, Pokédex y experiencia.
+  El servidor lo arma leyendo la partida que cada uno sube, no lo que diga el navegador.
+- **Estética de consola:** todo dibujado con CSS y fuentes pixel (Press Start 2P y Pixelify
+  Sans, incluidas en el build), sin imágenes ni assets de ningún juego.
 - **Teclado y táctil.** Cruceta y botones en pantalla para el teléfono.
 
 La partida en la nube se identifica por el archivo de la ROM (código del juego más una

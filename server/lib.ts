@@ -3,6 +3,7 @@
 export interface D1Statement {
   bind(...values: unknown[]): D1Statement;
   first<T>(): Promise<T | null>;
+  all<T>(): Promise<{ results: T[] }>;
   run(): Promise<unknown>;
 }
 export interface D1 {
@@ -45,8 +46,8 @@ export async function database(env: Env): Promise<D1 | null> {
         'CREATE TABLE IF NOT EXISTS sessions (token_hash TEXT PRIMARY KEY, user_id INTEGER NOT NULL, created_at INTEGER NOT NULL)',
       ),
       env.DB.prepare(
-        'CREATE TABLE IF NOT EXISTS user_saves (user_id INTEGER NOT NULL, name TEXT NOT NULL, saved_at INTEGER NOT NULL, ' +
-          'data BLOB NOT NULL, PRIMARY KEY (user_id, name))',
+        'CREATE TABLE IF NOT EXISTS game_saves (user_id INTEGER NOT NULL, name TEXT NOT NULL, saved_at INTEGER NOT NULL, ' +
+          'data BLOB NOT NULL, progress TEXT, PRIMARY KEY (user_id, name))',
       ),
     ]);
     ready = true;

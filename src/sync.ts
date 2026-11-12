@@ -120,6 +120,21 @@ export async function signOut() {
   clearSession();
 }
 
+// ---------- Participantes ----------
+
+export interface Player {
+  username: string;
+  savedAt: number | null;
+  progress: import('./save').Progress | null;
+}
+
+export async function players(): Promise<Player[]> {
+  const res = await call('players');
+  if (res.status === 401) throw new SyncError('auth');
+  if (!res.ok || !isJson(res)) throw new SyncError(isJson(res) ? 'server' : 'not-configured');
+  return ((await res.json()) as { players: Player[] }).players;
+}
+
 // ---------- Partida ----------
 
 /** Lo que este dispositivo sabe de la nube para un juego. */

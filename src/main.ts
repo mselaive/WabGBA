@@ -1,15 +1,35 @@
+import '@fontsource/press-start-2p';
+import '@fontsource/pixelify-sans/400.css';
+import '@fontsource/pixelify-sans/600.css';
+import '@fontsource/pixelify-sans/700.css';
 import mGBA, { type mGBAEmulator } from '@thenick775/mgba-wasm';
-import { ACHIEVEMENTS, evaluate, loadUnlocked, type Achievement } from './achievements';
-import { readSave } from './save';
+import {
+  ACHIEVEMENTS,
+  BADGES,
+  CHAINS,
+  evaluate,
+  loadUnlocked,
+  pointsFor,
+  rankFor,
+  type Achievement,
+} from './achievements';
+import { readSave, type Progress, type SaveResult } from './save';
+import { setSfx, sfx } from './sfx';
 import * as sync from './sync';
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
+/** Crea un elemento con clase y texto. */
+function el<K extends keyof HTMLElementTagNameMap>(tag: K, className = '', text = ''): HTMLElementTagNameMap[K] {
+  const node = document.createElement(tag);
+  if (className) node.className = className;
+  if (text) node.textContent = text;
+  return node;
+}
+
 const canvas = $<HTMLCanvasElement>('canvas');
-const library = $('library');
-const statusEl = $('status');
+const hub = $('hub');
 const romList = $('roms');
-const btnAdd = $<HTMLButtonElement>('btn-add');
 const fileRom = $<HTMLInputElement>('file-rom');
 const toastEl = $('toast');
 const btnPause = $('btn-pause');
@@ -23,6 +43,9 @@ let muted = false;
 let speed = 1;
 let holdingFast = false;
 
+const baseName = (path: string) => path.split('/').pop() ?? path;
+const stem = (name: string) => name.replace(/\.[^.]+$/, '');
+
 // ---------- Avisos ----------
 
 let toastTimer = 0;
@@ -30,12 +53,26 @@ function toast(msg: string) {
   toastEl.textContent = msg;
   toastEl.classList.add('show');
   clearTimeout(toastTimer);
-  toastTimer = window.setTimeout(() => toastEl.classList.remove('show'), 1800);
+  toastTimer = window.setTimeout(() => toastEl.classList.remove('show'), 2200);
+}
+
+/** Escribe un texto letra por letra en la caja de abajo del menú. */
+let sayTimer = 0;
+function say(text: string) {
+  const target = $('textbox-text');
+  clearInterval(sayTimer);
+  let i = 0;
+  target.textContent = '';
+  sayTimer = window.setInterval(() => {
+    i += 2;
+    target.textContent = text.slice(0, i);
+    if (i >= text.length) clearInterval(sayTimer);
+  }, 16);
 }
 
 function fail(msg: string) {
-  statusEl.textContent = msg;
-  statusEl.classList.add('error');
+  sfx('error');
+  say(msg);
 }
 
 // ---------- Persistencia ----------
@@ -70,6 +107,7 @@ function onGameSaved() {
     const synced = await syncUpload(false);
     toast(synced ? '☁ Partida guardada y sincronizada' : 'Partida guardada');
     checkAchievements(false);
+    playersCache = null;
   }, 600);
 }
 
@@ -89,24 +127,35 @@ const username = () => sync.getSession()?.username ?? '';
 
 function setRegisterMode(on: boolean) {
   registerMode = on;
-  loginInvite.hidden = !on;
-  loginSubmit.textContent = on ? 'Crear cuenta' : 'Entrar';
+  $('login-invite-row').hidden = !on;
+  loginSubmit.textContent = on ? '▶ CREAR CUENTA' : '▶ ENTRAR';
+  $('login-sub').textContent = on ? 'Nueva ficha de entrenador' : '¡Hola, entrenador!';
   $('login-switch').textContent = on ? 'Ya tengo cuenta' : 'Crear una cuenta';
   loginPass.autocomplete = on ? 'new-password' : 'current-password';
+  loginError.textContent = '';
+}
+
+function loginFail(message: string) {
+  loginError.textContent = message;
+  loginError.classList.remove('shake');
+  void loginError.offsetWidth; // reinicia la animación
+  loginError.classList.add('shake');
+  sfx('error');
 }
 
 function showLogin(message = '') {
-  loginError.textContent = message;
   setRegisterMode(false);
+  loginError.textContent = message;
   loginPanel.hidden = false;
   // Que el emulador no se coma las teclas mientras se escribe.
   emu.toggleInput(false);
+  loginUser.focus();
 }
 
 function hideLogin() {
   loginPanel.hidden = true;
-  emu.toggleInput(true);
-  renderLibrary();
+  emu.toggleInput(hub.hidden);
+  renderHub();
 }
 
 /** Cierra el juego en curso dejando todo guardado en el dispositivo. */
@@ -116,10 +165,16 @@ async function stopGame() {
   emu.quitGame();
   running = false;
   await persist();
-  library.hidden = false;
+  document.title = 'WabGBA';
+  setHub(true);
 }
 
 async function submitLogin() {
+  if (loginSubmit.disabled) return;
+  if (!loginUser.value.trim() || !loginPass.value) {
+    loginFail('Escribí tu usuario y tu contraseña.');
+    return;
+  }
   loginSubmit.disabled = true;
   loginError.textContent = '';
   try {
@@ -129,10 +184,12 @@ async function submitLogin() {
     loginInvite.value = '';
     // Cada cuenta tiene su propia partida: lo que estuviera abierto se cierra.
     await stopGame();
+    playersCache = null;
+    sfx('ok');
     hideLogin();
-    toast(`Hola, ${session.username}`);
+    toast(`¡Hola, ${session.username}!`);
   } catch (e) {
-    loginError.textContent = sync.describe(e);
+    loginFail(sync.describe(e));
   } finally {
     loginSubmit.disabled = false;
   }
@@ -141,15 +198,16 @@ async function submitLogin() {
 async function logout() {
   await stopGame();
   await sync.signOut();
-  renderLibrary();
+  playersCache = null;
+  renderHub();
   showLogin();
 }
 
 function renderAccount() {
   const session = sync.getSession();
   $('account').hidden = !cloud;
-  $('account-name').textContent = session ? `👤 ${session.username}` : 'Sin cuenta: la partida queda sólo acá';
-  $('btn-account').textContent = session ? 'Salir' : 'Entrar';
+  $('account-name').textContent = session ? session.username : '';
+  $('btn-account').textContent = session ? 'SALIR' : 'ENTRAR';
 }
 
 // ---------- Partida en la nube ----------
@@ -255,14 +313,34 @@ async function syncUpload(force: boolean): Promise<boolean> {
   return false;
 }
 
+// ---------- Mi progreso ----------
+
+const romNames = () => emu.listRoms().filter((n) => n !== '.' && n !== '..');
+
+/** La ROM en juego o, si no hay ninguna abierta, la última que se jugó. */
+function activeRom(): string | null {
+  if (running && emu.gameName) return baseName(emu.gameName);
+  const last = localStorage.getItem('wabgba.lastRom');
+  return last && romNames().includes(last) ? last : null;
+}
+
+function mySave(): SaveResult {
+  if (running) return readSave(emu.getSave());
+  const rom = activeRom();
+  return rom ? readSave(readFileIfAny(savePathFor(rom))) : { ok: false, reason: 'empty' };
+}
+
+/** Clave bajo la que se anotan los logros de la partida activa. */
+function myGameKey(): string {
+  const rom = activeRom();
+  return rom ? stem(baseName(savePathFor(rom))) : '';
+}
+
 // ---------- Logros ----------
 
-const achvPanel = $('achievements');
 const achvPop = $('achv-pop');
 const popQueue: Achievement[] = [];
 let popBusy = false;
-
-const gameKey = () => (emu.saveName ? stem(baseName(emu.saveName)) : '');
 
 function showNextPop() {
   const a = popQueue.shift();
@@ -272,126 +350,401 @@ function showNextPop() {
   }
   popBusy = true;
   achvPop.querySelector('.icon')!.textContent = a.icon;
-  achvPop.querySelector('b')!.textContent = a.title;
+  achvPop.querySelector('b')!.textContent = `${a.title}  +${a.points} XP`;
   achvPop.classList.add('show');
+  sfx('unlock');
   setTimeout(() => {
     achvPop.classList.remove('show');
     setTimeout(showNextPop, 450);
   }, 3500);
 }
 
-/** Lee la partida y desbloquea lo que corresponda. `quiet`: al abrir el juego, sin desfile de avisos. */
+/** Lee la partida y desbloquea lo que corresponda. `quiet`: sin desfile de avisos. */
 function checkAchievements(quiet: boolean) {
-  if (!running) return;
-  const save = readSave(emu.getSave());
-  if (!save.ok) return;
-  const fresh = evaluate(gameKey(), save.progress);
-  if (!fresh.length) return;
-  if (quiet || fresh.length > 3) {
-    toast(fresh.length === 1 ? `🏆 ${fresh[0].title}` : `🏆 ${fresh.length} logros desbloqueados`);
+  const save = mySave();
+  const key = myGameKey();
+  if (!save.ok || !key) return;
+  const fresh = evaluate(key, save.progress);
+  if (!fresh.length || quiet) return;
+  if (fresh.length > 3) {
+    toast(`🏆 ${fresh.length} logros desbloqueados`);
+    sfx('unlock');
   } else {
     popQueue.push(...fresh);
     if (!popBusy) showNextPop();
   }
-  if (!achvPanel.hidden) renderAchievements();
 }
 
-function renderAchievements() {
-  const save = readSave(emu.getSave());
-  const unlocked = loadUnlocked(gameKey());
-  const count = ACHIEVEMENTS.filter((a) => unlocked[a.id]).length;
-  $('achv-count').textContent = `${count} / ${ACHIEVEMENTS.length}`;
+// ---------- Menú ----------
 
-  const summary = $('achv-summary');
-  if (save.ok) {
-    const p = save.progress;
-    summary.textContent =
-      `${p.name || 'Entrenador'} · ${p.hours}:${String(p.minutes).padStart(2, '0')} h · ` +
-      `${p.badgeCount} ${p.badgeCount === 1 ? 'medalla' : 'medallas'} · Pokédex ${p.owned}`;
-  } else if (save.reason === 'unsupported') {
-    summary.textContent = 'Por ahora los logros sólo funcionan con Pokémon Rojo Fuego y Verde Hoja.';
-  } else {
-    summary.textContent = 'Todavía no hay partida guardada. Guardá dentro del juego para empezar a sumar logros.';
+type Tab = 'play' | 'missions' | 'trophies' | 'players';
+const TABS: Tab[] = ['play', 'missions', 'trophies', 'players'];
+let tab: Tab = 'play';
+
+function setHub(open: boolean) {
+  hub.hidden = !open;
+  if (running) {
+    if (open) emu.pauseGame();
+    else if (!paused) emu.resumeGame();
   }
-
-  $('achv-list').replaceChildren(
-    ...ACHIEVEMENTS.map((a) => {
-      const when = unlocked[a.id];
-      const li = document.createElement('li');
-      li.classList.toggle('done', !!when);
-      const icon = document.createElement('span');
-      icon.className = 'icon';
-      icon.textContent = a.icon;
-      const body = document.createElement('div');
-      body.className = 'body';
-      const title = document.createElement('b');
-      title.textContent = a.title;
-      const desc = document.createElement('small');
-      desc.textContent = a.desc;
-      body.append(title, desc);
-      const side = document.createElement('span');
-      side.className = 'side';
-      if (when) side.textContent = new Date(when).toLocaleDateString();
-      else if (a.progress && save.ok) {
-        const [cur, goal] = a.progress(save.progress);
-        side.textContent = `${Math.min(cur, goal).toLocaleString()} / ${goal.toLocaleString()}`;
-      }
-      li.append(icon, body, side);
-      return li;
-    }),
-  );
+  emu.toggleInput(!open && loginPanel.hidden);
+  if (open) renderHub();
 }
 
-function toggleAchievements(open: boolean) {
-  if (open) {
-    checkAchievements(true);
-    renderAchievements();
+async function openHub() {
+  if (running) {
+    emu.forceAutoSaveState();
+    void persist();
   }
-  achvPanel.hidden = !open;
+  sfx('ok');
+  setHub(true);
 }
 
-// ---------- Biblioteca ----------
+function closeHub() {
+  if (!running) return;
+  sfx('back');
+  setHub(false);
+}
 
-const baseName = (path: string) => path.split('/').pop() ?? path;
-const stem = (name: string) => name.replace(/\.[^.]+$/, '');
+function setTab(next: Tab) {
+  if (next !== tab) sfx('move');
+  tab = next;
+  renderHub();
+}
 
-function renderLibrary() {
-  const roms = emu.listRoms().filter((n) => n !== '.' && n !== '..');
+function renderHub() {
+  renderAccount();
+  checkAchievements(true);
+  for (const b of document.querySelectorAll<HTMLElement>('#tabs button')) {
+    b.classList.toggle('on', b.dataset.tab === tab);
+  }
+  for (const t of TABS) $(`tab-${t}`).hidden = t !== tab;
+  if (tab === 'play') renderPlay();
+  else if (tab === 'missions') renderMissions();
+  else if (tab === 'trophies') renderTrophies();
+  else renderPlayers();
+}
+
+// ----- Jugar -----
+
+function renderPlay() {
+  const roms = romNames();
+  const current = running ? activeRom() : null;
+  const last = activeRom();
+  $('btn-resume').hidden = !running;
+  $('btn-export').hidden = !running;
+
   romList.replaceChildren(
     ...roms.map((name) => {
-      const li = document.createElement('li');
-      const play = document.createElement('button');
-      play.className = 'play';
-      play.textContent = '▶  ' + stem(name);
-      play.onclick = () => startGame(name);
-      const del = document.createElement('button');
-      del.className = 'del';
-      del.textContent = '✕';
+      const li = el('li', 'cart-wrap');
+      const cart = el('button', 'cart' + (name === current ? ' playing' : ''));
+      cart.append(el('span', 'label', stem(name)));
+      if (name === current) cart.append(el('span', 'tag', 'JUGANDO'));
+      else if (name === last) cart.append(el('span', 'tag', 'ÚLTIMO'));
+      cart.onclick = () => (name === current ? closeHub() : void startGame(name));
+      const del = el('button', 'del', '✕');
       del.title = 'Quitar la ROM (la partida se conserva)';
       del.onclick = async () => {
         if (!confirm(`¿Quitar "${name}" de este navegador? La partida guardada se conserva.`)) return;
+        if (name === current) await stopGame();
         emu.FS.unlink(`${emu.filePaths().gamePath}/${name}`);
         await persist();
-        renderLibrary();
+        renderHub();
       };
-      li.append(play, del);
+      li.append(cart, del);
       return li;
     }),
+    (() => {
+      const li = el('li');
+      const add = el('button', 'cart empty', '+ AGREGAR ROM');
+      add.onclick = () => fileRom.click();
+      li.append(add);
+      return li;
+    })(),
   );
-  renderAccount();
-  $('btn-export').hidden = !running;
-  statusEl.classList.remove('error');
-  statusEl.textContent = roms.length ? 'Elegí un juego para seguir tu partida.' : 'Agregá tu ROM para empezar.';
+
+  say(
+    running
+      ? 'El juego está en pausa. Volvé cuando quieras.'
+      : roms.length
+        ? 'Elegí un cartucho para seguir tu aventura.'
+        : 'Agregá tu ROM para empezar. Queda guardada sólo en este navegador.',
+  );
 }
 
+// ----- Ficha de entrenador -----
+
+function avatar(name: string, small = false): HTMLElement {
+  let hash = 0;
+  for (const c of name) hash = (hash * 31 + c.charCodeAt(0)) >>> 0;
+  const node = el('span', 'avatar' + (small ? ' small' : ''), (name[0] ?? '?').toUpperCase());
+  node.style.background = `hsl(${hash % 360} 62% 56%)`;
+  return node;
+}
+
+function bar(current: number, goal: number, className = ''): HTMLElement {
+  const node = el('div', 'bar ' + className);
+  const fill = el('i');
+  fill.style.width = `${Math.max(0, Math.min(1, goal ? current / goal : 0)) * 100}%`;
+  node.append(fill);
+  return node;
+}
+
+function gems(badges: boolean[], big = false): HTMLElement {
+  const row = el('div', 'gems' + (big ? ' big' : ''));
+  BADGES.forEach((name, i) => {
+    const gem = el(big ? 'button' : 'i', `gem g${i + 1}` + (badges[i] ? ' on' : ''));
+    gem.title = `Medalla ${name}`;
+    if (big) {
+      gem.onclick = () => {
+        sfx('move');
+        say(`Medalla ${name}: ${badges[i] ? '¡conseguida!' : 'todavía no la tenés.'}`);
+      };
+    }
+    row.append(gem);
+  });
+  return row;
+}
+
+const playTime = (p: Progress) => `${p.hours}:${String(p.minutes).padStart(2, '0')} h`;
+
+function trainerCard(name: string, p: Progress | null, emptyText: string): HTMLElement {
+  const card = el('div', 'box trainer');
+  const rank = rankFor(pointsFor(p));
+  const who = el('div', 'who');
+  who.append(el('b', '', name), el('span', 'rank', `NV ${rank.level} · ${rank.name.toUpperCase()}`));
+  const xp = el('div', 'xp');
+  xp.append(
+    bar(rank.points - rank.floor, (rank.next ?? rank.points) - rank.floor || 1, 'gold'),
+    el('span', '', rank.next ? `${rank.points} / ${rank.next} XP` : `${rank.points} XP`),
+  );
+  card.append(avatar(name), who, xp);
+  if (p) {
+    const stats = el('div', 'stats');
+    stats.append(
+      gems(p.badges),
+      el('span', '', `📕 ${p.owned}`),
+      el('span', '', `⏱ ${playTime(p)}`),
+      el('span', '', `💪 Nv ${p.maxLevel}`),
+    );
+    card.append(stats);
+  } else {
+    card.append(el('p', 'stats empty', emptyText));
+  }
+  return card;
+}
+
+function myName(p: Progress | null): string {
+  return username() || p?.name || 'Entrenador';
+}
+
+function emptyReason(save: SaveResult): string {
+  if (save.ok) return '';
+  return save.reason === 'unsupported'
+    ? 'Por ahora las misiones sólo funcionan con Pokémon Rojo Fuego y Verde Hoja.'
+    : 'Todavía no hay partida guardada. Guardá dentro del juego para empezar a sumar.';
+}
+
+// ----- Misiones -----
+
+function missionCard(a: Achievement, p: Progress | null, state: 'now' | 'done'): HTMLElement {
+  const node = el('div', 'mission ' + state);
+  node.append(
+    el('span', 'icon', a.icon),
+    el('b', '', a.title),
+    el('span', 'reward', state === 'done' ? '✔ HECHA' : `+${a.points} XP`),
+    el('small', '', a.desc),
+  );
+  if (state === 'now' && a.progress && p) {
+    const [cur, goal] = a.progress(p);
+    node.append(bar(cur, goal));
+  }
+  return node;
+}
+
+function renderMissions() {
+  const save = mySave();
+  const p = save.ok ? save.progress : null;
+  const root = $('tab-missions');
+  const nodes: HTMLElement[] = [trainerCard(myName(p), p, emptyReason(save))];
+
+  for (const chain of CHAINS) {
+    const list = ACHIEVEMENTS.filter((a) => a.chain === chain.id);
+    const done = list.map((a) => !!p && a.done(p));
+    const count = done.filter(Boolean).length;
+    const next = list.find((_, i) => !done[i]);
+
+    const box = el('article', 'box chain' + (next ? '' : ' complete'));
+    const head = el('header');
+    const pips = el('div', 'pips');
+    done.forEach((d) => pips.append(el('i', d ? 'on' : '')));
+    head.append(el('h3', 'px-title', `${chain.icon} ${chain.title}`), pips, el('span', 'count', `${count}/${list.length}`));
+    box.append(head);
+    box.append(next ? missionCard(next, p, 'now') : missionCard(list[list.length - 1], p, 'done'));
+
+    const all = el('details');
+    all.append(el('summary', '', 'Ver toda la cadena'));
+    const ol = el('ol');
+    list.forEach((a, i) => {
+      const li = el('li', done[i] ? 'done' : '', a.title);
+      li.append(el('span', '', `${a.points} XP`));
+      ol.append(li);
+    });
+    all.append(ol);
+    box.append(all);
+    nodes.push(box);
+  }
+  root.replaceChildren(...nodes);
+  say(
+    p
+      ? 'Estas son tus misiones. Se revisan cada vez que guardás dentro del juego.'
+      : 'Las misiones se activan con tu primera partida guardada.',
+  );
+}
+
+// ----- Logros -----
+
+function renderTrophies() {
+  const save = mySave();
+  const p = save.ok ? save.progress : null;
+  const unlocked = loadUnlocked(myGameKey());
+  const root = $('tab-trophies');
+  const count = ACHIEVEMENTS.filter((a) => unlocked[a.id]).length;
+
+  const tiles = el('div', 'tiles');
+  for (const a of ACHIEVEMENTS) {
+    const when = unlocked[a.id];
+    const tile = el('button', 'tile' + (when ? ' done' : ''));
+    tile.append(el('span', 'icon', a.icon), el('small', '', a.title));
+    tile.onclick = () => {
+      sfx('move');
+      tiles.querySelector('.sel')?.classList.remove('sel');
+      tile.classList.add('sel');
+      let status = 'Todavía no lo tenés.';
+      if (when) status = `¡Conseguido el ${new Date(when).toLocaleDateString()}!`;
+      else if (a.progress && p) {
+        const [cur, goal] = a.progress(p);
+        status = `Vas ${Math.min(cur, goal).toLocaleString()} de ${goal.toLocaleString()}.`;
+      }
+      say(`${a.title} (+${a.points} XP). ${a.desc} ${status}`);
+    };
+    tiles.append(tile);
+  }
+
+  root.replaceChildren(
+    el('h2', 'px-title', `Estuche de medallas`),
+    gems(p?.badges ?? [], true),
+    el('h2', 'px-title', `Logros · ${count} / ${ACHIEVEMENTS.length}`),
+    tiles,
+  );
+  say(p ? 'Tocá un logro o una medalla para ver de qué se trata.' : emptyReason(save));
+}
+
+// ----- Participantes -----
+
+let playersCache: sync.Player[] | null = null;
+let playersError = '';
+let playersLoading = false;
+
+async function loadPlayers() {
+  if (playersLoading) return;
+  playersLoading = true;
+  try {
+    playersCache = await sync.players();
+    playersError = '';
+  } catch (e) {
+    playersError = sync.describe(e);
+  } finally {
+    playersLoading = false;
+  }
+  if (tab === 'players' && !hub.hidden) renderPlayers();
+}
+
+function timeAgo(ms: number): string {
+  const min = Math.round((Date.now() - ms) / 60000);
+  if (min < 2) return 'recién';
+  if (min < 60) return `hace ${min} min`;
+  if (min < 60 * 24) return `hace ${Math.round(min / 60)} h`;
+  return `hace ${Math.round(min / 60 / 24)} d`;
+}
+
+function playerRow(player: sync.Player, pos: number, isMe: boolean): HTMLElement {
+  const p = player.progress;
+  const rank = rankFor(pointsFor(p));
+  const row = el('button', 'box player' + (isMe ? ' me' : ''));
+  const name = el('div', 'name');
+  name.append(el('b', '', player.username));
+  if (isMe) name.append(el('span', 'you', 'VOS'));
+  const sub = el('div', 'sub');
+  if (p) sub.append(gems(p.badges), el('span', '', `📕 ${p.owned}`), el('span', '', `⏱ ${playTime(p)}`));
+  else sub.append(el('span', '', 'Sin partida todavía'));
+  const pts = el('div', 'pts', `${rank.points} XP`);
+  pts.append(el('small', '', rank.name.toUpperCase()));
+  row.append(el('span', 'pos', `${pos}º`), avatar(player.username, true), name, pts, sub);
+  row.onclick = () => {
+    sfx('move');
+    say(
+      p
+        ? `${player.username}, ${rank.name}. Juega como ${p.name || '???'}: ${p.badgeCount} ` +
+            `${p.badgeCount === 1 ? 'medalla' : 'medallas'}, ${p.owned} en la Pokédex y su mejor Pokémon es nivel ` +
+            `${p.maxLevel}.` +
+            (player.savedAt ? ` Guardó ${timeAgo(player.savedAt)}.` : '')
+        : `${player.username} todavía no guardó ninguna partida.`,
+    );
+  };
+  return row;
+}
+
+function renderPlayers() {
+  const root = $('tab-players');
+  const save = mySave();
+  const mine: sync.Player = { username: myName(save.ok ? save.progress : null), savedAt: null, progress: save.ok ? save.progress : null };
+
+  if (!cloud || !username()) {
+    root.replaceChildren(
+      playerRow(mine, 1, true),
+      el('p', 'note', cloud ? 'Entrá con tu cuenta para ver a los demás participantes.' : 'En este sitio no hay cuentas: sólo estás vos.'),
+    );
+    say('Acá aparece el progreso de todos los que juegan.');
+    return;
+  }
+
+  if (!playersCache) {
+    root.replaceChildren(el('p', 'note', playersError || 'Buscando participantes…'));
+    if (!playersError) void loadPlayers();
+    else say(playersError);
+    return;
+  }
+
+  // Mi fila sale de la partida de este dispositivo, que es la más fresca.
+  const list = playersCache
+    .map((pl) => (pl.username === username() && mine.progress ? { ...pl, progress: mine.progress } : pl))
+    .sort((a, b) => pointsFor(b.progress) - pointsFor(a.progress) || a.username.localeCompare(b.username));
+
+  const head = el('div', 'who');
+  const refresh = el('button', 'px-btn small ghost', '↻ ACTUALIZAR');
+  refresh.onclick = () => {
+    sfx('ok');
+    playersCache = null;
+    renderPlayers();
+  };
+  head.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:8px';
+  head.append(el('h2', 'px-title', `${list.length} ${list.length === 1 ? 'participante' : 'participantes'}`), refresh);
+
+  root.replaceChildren(head, ...list.map((pl, i) => playerRow(pl, i + 1, pl.username === username())));
+  say('El ranking se arma con la experiencia de cada partida. Tocá a alguien para ver cómo va.');
+}
+
+// ---------- Juego ----------
+
 function addRom(file: File) {
-  statusEl.textContent = 'Guardando la ROM en el navegador…';
+  say('Guardando el cartucho en el navegador…');
   emu.uploadRom(file, async () => {
     await persist();
     // Pedirle al navegador que no borre estos datos si falta espacio.
     void navigator.storage?.persist?.();
-    renderLibrary();
-    startGame(file.name);
+    renderHub();
+    void startGame(file.name);
   });
 }
 
@@ -435,7 +788,7 @@ async function startGameInner(name: string) {
     localStorage.setItem(lastKey, user);
   }
 
-  if (user) statusEl.textContent = 'Revisando la partida de tu cuenta…';
+  if (user) say('Revisando la partida de tu cuenta…');
   const { forceUpload } = await syncBeforeLoad(name);
 
   const ok = emu.loadGame(romPath, savePathFor(name));
@@ -444,42 +797,26 @@ async function startGameInner(name: string) {
     return;
   }
   running = true;
+  localStorage.setItem('wabgba.lastRom', name);
   // Subir lo que este dispositivo tenga pendiente.
   const st = sync.getState(gameCode);
   if (forceUpload || st.dirty || st.base === null) setTimeout(() => void syncUpload(forceUpload), 1000);
   setPaused(false);
   applySpeed();
   applyVolume();
-  library.hidden = true;
+  sfx('ok');
+  setHub(false);
   document.title = `${stem(name)} · WabGBA`;
   canvas.focus();
   // Ponerse al día con lo que la partida ya tenía hecho.
   setTimeout(() => checkAchievements(true), 1500);
 }
 
-async function openLibrary() {
-  if (running) {
-    emu.forceAutoSaveState();
-    await persist();
-    emu.pauseGame();
-  }
-  renderLibrary();
-  library.hidden = false;
-}
-
-function closeLibraryIfRunning() {
-  if (!running) return;
-  library.hidden = true;
-  if (!paused) emu.resumeGame();
-}
-
-// ---------- Controles del emulador ----------
-
 function setPaused(p: boolean) {
   paused = p;
   if (p) emu.pauseGame();
   else emu.resumeGame();
-  btnPause.textContent = p ? '▶ Seguir' : '⏸ Pausa';
+  btnPause.textContent = p ? '▶' : '⏸';
   btnPause.classList.toggle('on', p);
 }
 
@@ -492,6 +829,7 @@ function applySpeed() {
 
 function applyVolume() {
   emu.setVolume(muted ? 0 : 1);
+  setSfx(!muted);
   btnMute.textContent = muted ? '🔇' : '🔊';
   btnMute.classList.toggle('on', muted);
 }
@@ -528,7 +866,18 @@ function setupKeyboard() {
   for (const [key, gba] of KEYS) emu.bindKey(key, gba);
 
   window.addEventListener('keydown', (e) => {
-    if (!running || !library.hidden || !loginPanel.hidden) return;
+    if (!loginPanel.hidden) return;
+
+    // En el menú: izquierda y derecha cambian de pestaña, Escape vuelve al juego.
+    if (!hub.hidden) {
+      if (e.code === 'ArrowLeft' || e.code === 'ArrowRight') {
+        const step = e.code === 'ArrowRight' ? 1 : -1;
+        setTab(TABS[(TABS.indexOf(tab) + step + TABS.length) % TABS.length]);
+      } else if (e.code === 'Escape') closeHub();
+      return;
+    }
+
+    if (!running) return;
     if (e.code === 'Space') {
       e.preventDefault();
       if (!holdingFast) {
@@ -541,7 +890,7 @@ function setupKeyboard() {
     else if (e.code === 'KeyM') {
       muted = !muted;
       applyVolume();
-    }
+    } else if (e.code === 'Escape') void openHub();
   });
   window.addEventListener('keyup', (e) => {
     if (e.code === 'Space' && holdingFast) {
@@ -554,21 +903,21 @@ function setupKeyboard() {
 // ---------- Controles táctiles ----------
 
 function setupTouch() {
-  for (const el of document.querySelectorAll<HTMLElement>('.pad[data-btn]')) {
-    const name = el.dataset.btn!;
+  for (const pad of document.querySelectorAll<HTMLElement>('.pad[data-btn]')) {
+    const name = pad.dataset.btn!;
     const up = () => {
-      el.classList.remove('down');
+      pad.classList.remove('down');
       emu.buttonUnpress(name);
     };
-    el.addEventListener('pointerdown', (e) => {
+    pad.addEventListener('pointerdown', (e) => {
       e.preventDefault();
-      el.setPointerCapture(e.pointerId);
-      el.classList.add('down');
+      pad.setPointerCapture(e.pointerId);
+      pad.classList.add('down');
       emu.buttonPress(name);
     });
-    el.addEventListener('pointerup', up);
-    el.addEventListener('pointercancel', up);
-    el.addEventListener('contextmenu', (e) => e.preventDefault());
+    pad.addEventListener('pointerup', up);
+    pad.addEventListener('pointercancel', up);
+    pad.addEventListener('contextmenu', (e) => e.preventDefault());
   }
 
   // Cruceta: una sola zona, la dirección sale de dónde está el dedo.
@@ -611,14 +960,14 @@ function setupTouch() {
 
 // ---------- Arranque ----------
 
-function setupToolbar() {
-  $('btn-library').onclick = () => void openLibrary();
+function setupUi() {
+  // Barra del juego
+  $('btn-menu').onclick = () => void openHub();
   btnPause.onclick = () => setPaused(!paused);
   btnSpeed.onclick = () => {
     speed = speed === 1 ? 2 : speed === 2 ? 4 : 1;
     applySpeed();
   };
-  $('btn-export').onclick = exportSave;
   btnMute.onclick = () => {
     muted = !muted;
     applyVolume();
@@ -627,39 +976,59 @@ function setupToolbar() {
     if (document.fullscreenElement) void document.exitFullscreen();
     else void $('player').requestFullscreen?.();
   };
+  // Que los botones no se queden con el foco del teclado.
+  for (const b of document.querySelectorAll<HTMLElement>('#toolbar button')) {
+    b.addEventListener('click', () => b.blur());
+  }
 
-  $('btn-achievements').onclick = () => toggleAchievements(true);
-  $('btn-achv-close').onclick = () => toggleAchievements(false);
-  achvPanel.addEventListener('click', (e) => {
-    if (e.target === achvPanel) toggleAchievements(false);
-  });
-
+  // Menú
+  for (const b of document.querySelectorAll<HTMLElement>('#tabs button')) {
+    b.onclick = () => setTab(b.dataset.tab as Tab);
+  }
+  $('btn-resume').onclick = closeHub;
+  $('btn-export').onclick = exportSave;
   $('btn-account').onclick = () => (sync.getSession() ? void logout() : showLogin());
-  $('login-form').addEventListener('submit', (e) => {
-    e.preventDefault();
-    void submitLogin();
-  });
-  $('login-switch').onclick = () => setRegisterMode(!registerMode);
-  $('login-skip').onclick = hideLogin;
-
-  btnAdd.onclick = () => fileRom.click();
   fileRom.onchange = () => {
     const f = fileRom.files?.[0];
     fileRom.value = '';
     if (f) addRom(f);
   };
-  // Clic fuera de la tarjeta: volver al juego.
-  library.addEventListener('click', (e) => {
-    if (e.target === library) closeLibraryIfRunning();
-  });
 
-  // Que los botones no se queden con el foco del teclado.
-  for (const b of document.querySelectorAll('#toolbar button')) {
-    b.addEventListener('click', () => (b as HTMLElement).blur());
+  // Entrada
+  $('login-form').addEventListener('submit', (e) => {
+    e.preventDefault();
+    void submitLogin();
+  });
+  $('login-switch').onclick = () => {
+    sfx('move');
+    setRegisterMode(!registerMode);
+  };
+  $('login-skip').onclick = () => {
+    sfx('back');
+    hideLogin();
+  };
+  // Los botones de la consola dibujada también funcionan.
+  $('deco-a').onclick = () => void submitLogin();
+  $('deco-b').onclick = () => {
+    sfx('back');
+    const focused = document.activeElement;
+    const field = focused instanceof HTMLInputElement ? focused : loginPass;
+    field.value = '';
+    field.focus();
+  };
+  for (const b of document.querySelectorAll<HTMLElement>('#deco-dpad button')) {
+    b.onclick = () => {
+      const fields = [loginUser, loginPass, loginInvite].filter((f) => f.offsetParent !== null);
+      const at = fields.indexOf(document.activeElement as HTMLInputElement);
+      const step = b.dataset.dir === 'down' ? 1 : -1;
+      fields[(Math.max(at, 0) + step + fields.length) % fields.length].focus();
+      sfx('move');
+    };
   }
 }
 
 async function main() {
+  say('Encendiendo la consola…');
   if (!window.crossOriginIsolated) {
     fail('Esta página necesita las cabeceras COOP/COEP para correr el emulador (ver README).');
     return;
@@ -675,11 +1044,10 @@ async function main() {
     autoSaveStateCapturedCallback: () => void persist(),
     coreCrashedCallback: () => toast('El juego se colgó. Recargá la página.'),
   });
-
   // Sin rebobinar: lo único que cuenta es el guardado del juego.
   emu.setCoreSettings({ rewindEnable: false });
 
-  setupToolbar();
+  setupUi();
   setupKeyboard();
   setupTouch();
 
@@ -696,10 +1064,9 @@ async function main() {
   window.addEventListener('pointerdown', wakeAudio);
   window.addEventListener('keydown', wakeAudio);
 
-  btnAdd.disabled = false;
   const account = await sync.check();
   cloud = account !== 'none';
-  renderLibrary();
+  setHub(true);
   if (account === 'out' || (account === 'offline' && !sync.getSession())) showLogin();
   console.log(`${emu.version.projectName} ${emu.version.projectVersion}`);
 }
