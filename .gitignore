@@ -9,4 +9,4 @@ dist/
 *.gb
 *.sav
 *.ss*
-roms/
+/roms/
