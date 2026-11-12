@@ -61,6 +61,11 @@ export async function database(env: Env): Promise<D1 | null> {
           'type TEXT NOT NULL, key TEXT NOT NULL, created_at INTEGER NOT NULL, data TEXT NOT NULL, image BLOB, ' +
           'UNIQUE (user_id, key))',
       ),
+      // Pedidos de anulación de un evento, a la espera de lo que decida quien administra.
+      env.DB.prepare(
+        'CREATE TABLE IF NOT EXISTS appeals (event_id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL, ' +
+          'reason TEXT NOT NULL, status TEXT NOT NULL, created_at INTEGER NOT NULL)',
+      ),
       env.DB.prepare('CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)'),
       env.DB.prepare('CREATE TABLE IF NOT EXISTS prefs (user_id INTEGER PRIMARY KEY, data TEXT NOT NULL)'),
       // D1 no guarda valores de más de 2 MB: la ROM va partida en trozos.

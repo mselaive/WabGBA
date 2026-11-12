@@ -441,10 +441,29 @@ async function loadFeed() {
     lives = res.lives;
     feedLoaded = true;
     announceNew();
+    announceAppeals();
     if (!hub.hidden && tab !== 'play') renderHub();
   } catch (e) {
     feedLoaded = true;
     if (e instanceof sync.SyncError && e.kind === 'auth') onCloudError(e);
+  }
+}
+
+/** A quien administra: avisa una vez por cada pedido de anulación nuevo. */
+function announceAppeals() {
+  if (!isAdmin()) return;
+  const key = `wabgba.appeals.${username()}`;
+  const known = loadJson<number[]>(key, []);
+  const waiting = feed.filter((e) => e.appeal?.status === 'pending');
+  const fresh = waiting.filter((e) => !known.includes(e.id));
+  localStorage.setItem(key, JSON.stringify(waiting.map((e) => e.id)));
+  for (const e of fresh) {
+    pop({
+      icon: '🙋',
+      label: 'PEDIDO DE ANULACIÓN',
+      title: `${e.username} quiere anular una baja. Mirá el Historial.`,
+      sound: 'ok',
+    });
   }
 }
 
@@ -863,6 +882,7 @@ function renderPlay() {
   const last = activeRom();
   $('btn-resume').hidden = !running;
   $('btn-export').hidden = !running;
+  $('btn-reset').hidden = !last || (cloud && !username());
 
   const nodes = list.map((c) => {
     const li = el('li', 'cart-wrap');
@@ -1040,25 +1060,73 @@ function eventCard(e: FeedItem): HTMLElement {
   const card = el('article', `box event ${e.type}`);
   card.append(el('span', 'icon', text.icon), el('b', '', text.title), el('span', 'when', timeAgo(e.at)), el('small', '', text.sub));
 
-  // Quien administra puede anular un evento (por si el detector se equivocó).
-  if (!shared() || isAdmin()) {
-    const undo = el('button', 'link dark undo', 'Anular');
-    undo.onclick = async () => {
-      if (!confirm(`¿Anular "${text.title}"? Deja de contar para las vidas y los logros.`)) return;
+  const act = (label: string, run: () => Promise<void>, ask?: string) => {
+    const button = el('button', 'link dark', label);
+    button.onclick = async () => {
+      if (ask && !confirm(ask)) return;
       try {
-        if (shared()) {
-          await sync.deleteEvent(e.id);
-          playersCache = null;
-          await loadFeed();
-        } else {
-          localStorage.setItem('wabgba.events', JSON.stringify(localEvents().filter((x) => x.id !== e.id)));
-        }
+        await run();
+        playersCache = null;
+        await loadFeed();
         renderHub();
       } catch (err) {
         onCloudError(err);
       }
     };
-    card.append(undo);
+    return button;
+  };
+  const actions = el('div', 'undo');
+  const pending = e.appeal?.status === 'pending';
+
+  if (!shared()) {
+    // Sin cuentas no hay a quién pedirle permiso: se anula directo.
+    actions.append(
+      act(
+        'Anular',
+        async () => localStorage.setItem('wabgba.events', JSON.stringify(localEvents().filter((x) => x.id !== e.id))),
+        `¿Anular "${text.title}"?`,
+      ),
+    );
+  } else if (isAdmin()) {
+    // Quien administra decide: aprueba o rechaza un pedido, o anula por su cuenta.
+    if (pending) {
+      actions.append(
+        act('✔ Aprobar', () => sync.deleteEvent(e.id), `¿Aprobar el pedido y anular "${text.title}"?`),
+        act('✖ Rechazar', () => sync.rejectAppeal(e.id)),
+      );
+    } else {
+      actions.append(
+        act('Anular', () => sync.deleteEvent(e.id), `¿Anular "${text.title}"? Deja de contar para las vidas y los logros.`),
+      );
+    }
+  } else if (e.username === username() && e.type === 'death' && !e.appeal) {
+    // El resto sólo puede pedirlo, y sólo por sus propias bajas.
+    const ask = el('button', 'link dark', 'Pedir anulación');
+    ask.onclick = async () => {
+      const reason = prompt('¿Por qué habría que anularla? Lo va a leer quien administra.');
+      if (reason === null) return;
+      try {
+        await sync.appealEvent(e.id, reason);
+        toast('Pedido enviado. Queda en revisión.');
+        await loadFeed();
+        renderHub();
+      } catch (err) {
+        onCloudError(err);
+      }
+    };
+    actions.append(ask);
+  }
+  if (actions.childElementCount) card.append(actions);
+
+  if (e.appeal) {
+    const reason = e.appeal.reason ? `: «${e.appeal.reason}»` : '';
+    card.append(
+      el(
+        'p',
+        'appeal ' + e.appeal.status,
+        pending ? `🙋 Anulación pedida${reason} · en revisión` : '🚫 Se pidió anularla y fue rechazada.',
+      ),
+    );
   }
 
   if (e.shot || e.image) {
@@ -1436,6 +1504,53 @@ async function startGameInner(name: string) {
   setTimeout(() => checkAchievements(true), 1500);
 }
 
+/** Empezar de cero: borra la partida (acá y en la cuenta), sus bajas y sus logros, y arranca el juego. */
+async function resetRun() {
+  const rom = activeRom();
+  if (!rom || busy) return;
+  const title = titleOf(rom);
+  if (
+    !confirm(
+      `¿Reiniciar tu partida de "${title}" desde cero?
+
+` +
+        'Se borran la partida guardada, tus bajas y tus logros de este juego. No se puede deshacer.',
+    )
+  ) {
+    return;
+  }
+  busy = true;
+  try {
+    const paths = emu.filePaths();
+    const logrosKey = myGameKey();
+    await stopGame();
+    gameCode = await romId(`${paths.gamePath}/${rom}`, stem(rom));
+    say('Borrando la partida…');
+    // Primero la cuenta: si falla, acá no se toca nada.
+    if (shared()) await sync.resetRun(gameCode);
+
+    dropFile(savePathFor(rom));
+    dropFile(`${paths.autosave}/${stem(rom)}_auto.ss`);
+    localStorage.removeItem(`wabgba.logros.${logrosKey}`);
+    localStorage.removeItem(deadKey());
+    sync.clearState(gameCode);
+    if (!shared()) {
+      const kept = localEvents().filter((e) => (e.data as { game?: string }).game !== gameCode);
+      localStorage.setItem('wabgba.events', JSON.stringify(kept));
+    }
+    await persist();
+    playersCache = null;
+    await loadFeed();
+    busy = false;
+    toast('Partida reiniciada. ¡Suerte esta vez!');
+    await startGame(rom);
+  } catch (e) {
+    onCloudError(e);
+  } finally {
+    busy = false;
+  }
+}
+
 function setPaused(p: boolean) {
   paused = p;
   if (p) emu.pauseGame();
@@ -1646,6 +1761,7 @@ function setupUi() {
   };
   $('btn-set-save').onclick = () => void saveRules();
   $('btn-export').onclick = exportSave;
+  $('btn-reset').onclick = () => void resetRun();
   $('btn-account').onclick = () => (sync.getSession() ? void logout() : showLogin());
   fileRom.onchange = () => {
     const f = fileRom.files?.[0];

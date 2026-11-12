@@ -12,6 +12,8 @@ interface Row {
   created_at: number;
   data: string;
   has_image: number;
+  appeal_status: string | null;
+  appeal_reason: string | null;
 }
 
 const MAX_IMAGE = 200 * 1024;
@@ -44,7 +46,8 @@ export async function onRequest({ request, env }: Context): Promise<Response> {
     const { results } = await db
       .prepare(
         'SELECT e.id AS id, u.username AS username, e.type AS type, e.created_at AS created_at, e.data AS data, ' +
-          '(e.image IS NOT NULL) AS has_image FROM events e LEFT JOIN users u ON u.id = e.user_id ' +
+          '(e.image IS NOT NULL) AS has_image, a.status AS appeal_status, a.reason AS appeal_reason ' +
+          'FROM events e LEFT JOIN users u ON u.id = e.user_id LEFT JOIN appeals a ON a.event_id = e.id ' +
           'ORDER BY e.id DESC LIMIT 150',
       )
       .all<Row>();
@@ -55,7 +58,15 @@ export async function onRequest({ request, env }: Context): Promise<Response> {
       } catch {
         /* dato ilegible */
       }
-      return { id: r.id, username: r.username, type: r.type, at: r.created_at, data, image: !!r.has_image };
+      return {
+        id: r.id,
+        username: r.username,
+        type: r.type,
+        at: r.created_at,
+        data,
+        image: !!r.has_image,
+        appeal: r.appeal_status ? { status: r.appeal_status, reason: r.appeal_reason ?? '' } : null,
+      };
     });
     return json({ events, lives: await getLives(db) });
   }

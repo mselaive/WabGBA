@@ -244,6 +244,8 @@ export interface GameEvent {
   at: number;
   data: Record<string, unknown>;
   image: boolean;
+  /** Pedido de anulación del dueño: en revisión o ya rechazado. */
+  appeal?: { status: 'pending' | 'rejected'; reason: string } | null;
 }
 
 export async function events(): Promise<{ events: GameEvent[]; lives: number }> {
@@ -282,6 +284,23 @@ export async function eventImage(id: number): Promise<string | null> {
   return URL.createObjectURL(await res.blob());
 }
 
+/** El dueño de un evento pide que se anule; lo decide quien administra. */
+export async function appealEvent(id: number, reason: string): Promise<void> {
+  await okJson(
+    await call(`events/${id}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reason }),
+    }),
+  );
+}
+
+/** Quien administra rechaza un pedido de anulación. */
+export async function rejectAppeal(id: number): Promise<void> {
+  await okJson(await call(`events/${id}`, { method: 'PUT' }));
+}
+
+/** Quien administra anula un evento (aprobando el pedido, si lo había). */
 export async function deleteEvent(id: number): Promise<void> {
   await okJson(await call(`events/${id}`, { method: 'DELETE' }));
 }
@@ -354,6 +373,16 @@ async function saveCall(game: string, query: string, init: RequestInit = {}): Pr
   const res = await call(`save/${encodeURIComponent(game)}${query}`, init);
   if (res.status === 401) throw new SyncError('auth');
   return res;
+}
+
+export function clearState(game: string) {
+  localStorage.removeItem(stateKey(game));
+}
+
+/** Empezar de cero: borra de la cuenta la partida de ese juego, con sus bajas y medallas. */
+export async function resetRun(game: string): Promise<void> {
+  const res = await saveCall(game, '', { method: 'DELETE' });
+  if (!res.ok || !isJson(res)) throw new SyncError(isJson(res) ? 'server' : 'not-configured');
 }
 
 /** Versión que hay en la nube, o null si todavía no hay ninguna. */

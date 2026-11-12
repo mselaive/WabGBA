@@ -3,6 +3,7 @@
 //   GET  /api/save/<juego>?meta=1  -> { savedAt } | 404
 //   GET  /api/save/<juego>         -> bytes del .sav (cabecera X-Saved-At) | 404
 //   PUT  /api/save/<juego>         -> { savedAt } | 409 { savedAt } si la nube cambió
+//   DELETE /api/save/<juego>       -> empezar de cero: borra la partida y sus bajas y medallas
 //
 // El PUT manda en `X-Base` la versión de la nube sobre la que se jugó; si la nube ya tiene
 // otra, responde 409 salvo `X-Force: 1`.
@@ -113,6 +114,19 @@ export async function onRequest({ request, env, params }: Context): Promise<Resp
       .run();
     if (parsed.ok) await announceProgress(db, user, name, parseProgress(current?.progress), parsed.progress);
     return json({ savedAt });
+  }
+
+  if (request.method === 'DELETE') {
+    // Las claves de los eventos de una partida empiezan con el nombre del juego.
+    await db.batch([
+      db
+        .prepare("DELETE FROM appeals WHERE event_id IN (SELECT id FROM events WHERE user_id = ? AND key LIKE ? || ':%')")
+        .bind(user.id, name),
+      db.prepare('DELETE FROM game_saves WHERE user_id = ? AND name = ?').bind(user.id, name),
+      db.prepare("DELETE FROM events WHERE user_id = ? AND key LIKE ? || ':%'").bind(user.id, name),
+    ]);
+    await announce(db, `🔄 **${user.username}** reinició su partida. Borrón y cuenta nueva.`);
+    return json({ ok: true });
   }
 
   return json({ error: 'method' }, 405);
