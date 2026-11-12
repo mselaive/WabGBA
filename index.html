@@ -31,6 +31,7 @@
           <button id="btn-import" title="Reemplazar la partida con un .sav">⬆ Partida</button>
         </span>
         <button id="btn-achievements" title="Logros de esta partida">🏆 Logros</button>
+        <button id="btn-sync" title="Sincronizar la partida entre dispositivos">☁</button>
         <button id="btn-mute" title="Silenciar (M)">🔊</button>
         <button id="btn-touch" title="Mostrar u ocultar los controles táctiles">🎮</button>
         <button id="btn-full" title="Pantalla completa">⛶</button>
@@ -57,8 +58,10 @@
         <p id="status">Cargando el emulador…</p>
         <ul id="roms"></ul>
         <button id="btn-add" class="primary" disabled>Agregar ROM (.gba)</button>
+        <button id="btn-sync-library">☁ Perfil y sincronización</button>
         <p class="hint">
-          La ROM y la partida se guardan sólo en este navegador. Nada se sube a ningún servidor.
+          La ROM se guarda sólo en este navegador y nunca se sube. La partida también, salvo que
+          actives la sincronización.
         </p>
         <details>
           <summary>Controles de teclado</summary>
@@ -84,6 +87,32 @@
         <p id="achv-summary"></p>
         <ul id="achv-list"></ul>
         <p class="hint">Los logros se revisan cada vez que guardás dentro del juego.</p>
+      </div>
+    </div>
+
+    <div id="sync" hidden>
+      <div class="card">
+        <div class="card-head">
+          <h2>☁ Sincronización</h2>
+          <button id="btn-sync-close" title="Cerrar">✕</button>
+        </div>
+        <p class="hint">
+          Con la misma clave en tu PC y en tu teléfono, la partida se sube sola cada vez que guardás
+          dentro del juego y se baja al abrirlo en el otro dispositivo. Los estados no viajan.
+          Si juegan varias personas, cada una pone su perfil y tiene su propia partida.
+        </p>
+        <div class="row">
+          <input id="sync-profile" type="text" placeholder="Perfil (ej. mati) — una partida por perfil" autocomplete="off" maxlength="20" />
+        </div>
+        <div class="row">
+          <input id="sync-key" type="password" placeholder="Clave de sincronización" autocomplete="off" />
+          <button id="btn-sync-save">Guardar</button>
+        </div>
+        <p id="sync-status"></p>
+        <div class="row">
+          <button id="btn-sync-push">⬆ Subir la de acá</button>
+          <button id="btn-sync-pull">⬇ Traer la de la nube</button>
+        </div>
       </div>
     </div>
 

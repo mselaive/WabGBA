@@ -16,6 +16,12 @@ Emulador de Game Boy Advance en el navegador, de uso personal. Corre sobre
   Se leen del `.sav` cada vez que guardás dentro del juego (`src/save.ts`) y quedan
   anotados en el navegador. Para sumar uno nuevo, agregalo en `src/achievements.ts`.
 
+- **Sincronización entre dispositivos** (opcional): con la misma clave en la PC y el
+  teléfono, la partida se sube al guardar dentro del juego y se baja al abrirlo en el otro.
+  Si las dos cambiaron, pregunta cuál conservar.
+- **Perfiles:** cada persona pone su nombre y tiene su propia partida con la misma ROM, en
+  el dispositivo y en la nube. La ROM no se comparte: cada uno la agrega en su dispositivo.
+
 ## Controles
 
 | Tecla               | GBA                     |
@@ -46,14 +52,38 @@ Cross-Origin-Opener-Policy: same-origin
 Cross-Origin-Embedder-Policy: require-corp
 ```
 
-Ya están configuradas para los dos hostings gratuitos que sirven:
-
-- **Cloudflare Pages:** `public/_headers`. Comando de build `npm run build`, carpeta `dist`.
-- **Vercel:** `vercel.json`. Detecta Vite solo.
-
+Ya están configuradas en `public/_headers` (Cloudflare Pages) y `vercel.json` (Vercel).
 GitHub Pages no sirve tal cual, porque no deja configurar cabeceras.
+
+La sincronización sólo funciona en **Cloudflare Pages**, porque usa una Pages Function
+(`functions/api/save/[name].ts`) y una base D1. Todo entra en el plan gratis.
+
+### Cloudflare Pages, paso a paso
+
+1. En [dash.cloudflare.com](https://dash.cloudflare.com): **Workers & Pages → Create →
+   Pages → Connect to Git** y elegir este repo. Framework `Vite`, comando `npm run build`,
+   carpeta de salida `dist`.
+2. **Storage & Databases → D1 SQL Database → Create**, con cualquier nombre (por ejemplo
+   `wabgba`). No hay que crear tablas: se crean solas.
+3. En el proyecto de Pages: **Settings → Bindings → Add → D1 database**. Nombre de la
+   variable: `DB`. Base: la del paso 2.
+4. En **Settings → Variables and Secrets → Add**: tipo *Secret*, nombre `SYNC_KEY`, y como
+   valor la clave que quieras usar (larga, que no uses en otro lado).
+5. **Deployments → Retry deployment**, para que tome los cambios.
+6. En el sitio: **☁ → clave → Guardar**, en cada dispositivo.
+
+Quien tenga la clave puede leer y pisar todas las partidas del sitio: compartila sólo con
+quien vaya a jugar.
+
+### Probar la sincronización en local
+
+```bash
+npm run build
+npm run pages
+```
+
+Abre en `http://localhost:8790` con una base D1 local y la clave `clave-local`.
 
 ## Pendiente
 
-- Sincronizar la partida entre dispositivos.
 - Instalable como app (PWA).

@@ -332,7 +332,44 @@ td:first-child {
 
 /* ---------- Logros ---------- */
 
-#achievements {
+#sync .row {
+  display: flex;
+  gap: 8px;
+  margin: 10px 0;
+}
+
+#sync .row > * {
+  flex: 1;
+}
+
+#sync .row #btn-sync-save {
+  flex: none;
+}
+
+#sync input {
+  font: inherit;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px 10px;
+  min-width: 0;
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+#sync-status {
+  color: var(--dim);
+  margin: 10px 0;
+}
+
+#btn-sync-library {
+  width: 100%;
+  margin-top: 8px;
+}
+
+#achievements,
+#sync {
   position: fixed;
   inset: 0;
   display: flex;
@@ -343,7 +380,8 @@ td:first-child {
   z-index: 10;
 }
 
-#achievements[hidden] {
+#achievements[hidden],
+#sync[hidden] {
   display: none;
 }
 
