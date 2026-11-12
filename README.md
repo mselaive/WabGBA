@@ -57,7 +57,7 @@ npm run build
 npm run pages
 ```
 
-Abre en `http://localhost:8790`, con una base D1 local y el código de invitación
+Abre en `http://localhost:8790`, con una base D1 local (no toca la del sitio) y el código de invitación
 `invitacion-local`.
 
 ## Deployment gratis (Cloudflare Pages)

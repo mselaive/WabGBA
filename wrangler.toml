@@ -1,0 +1,12 @@
+# Configuración del proyecto de Cloudflare Pages (wabgba.pages.dev).
+# El secreto INVITE_CODE no va acá: se guarda con
+#   npx wrangler pages secret put INVITE_CODE --project-name wabgba
+name = "wabgba"
+pages_build_output_dir = "dist"
+compatibility_date = "2026-11-01"
+
+# Cuentas, partidas y biblioteca de ROMs.
+[[d1_databases]]
+binding = "DB"
+database_name = "wabgba"
+database_id = "5c10a4eb-07a8-49b0-bed1-5af02edfee7e"
