@@ -1,0 +1,12 @@
+node_modules/
+dist/
+.vercel/
+.wrangler/
+
+# Las ROMs y las partidas nunca van al repo
+*.gba
+*.gbc
+*.gb
+*.sav
+*.ss*
+roms/

@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
+    <meta name="theme-color" content="#14151c" />
+    <title>WabGBA</title>
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <div id="player">
+      <div id="screen">
+        <canvas id="canvas" width="240" height="160"></canvas>
+      </div>
+
+      <div id="toolbar">
+        <button id="btn-library" title="Volver a la biblioteca">☰ Juegos</button>
+        <button id="btn-pause" title="Pausar o seguir (P)">⏸ Pausa</button>
+        <button id="btn-speed" title="Velocidad (mantener Espacio para acelerar)">x1</button>
+        <span class="group">
+          <select id="slot" title="Ranura de estado">
+            <option value="1">Ranura 1</option>
+            <option value="2">Ranura 2</option>
+            <option value="3">Ranura 3</option>
+          </select>
+          <button id="btn-save-state" title="Guardar estado (F2)">Guardar estado</button>
+          <button id="btn-load-state" title="Cargar estado (F4)">Cargar estado</button>
+        </span>
+        <span class="group">
+          <button id="btn-export" title="Descargar la partida (.sav)">⬇ Partida</button>
+          <button id="btn-import" title="Reemplazar la partida con un .sav">⬆ Partida</button>
+        </span>
+        <button id="btn-mute" title="Silenciar (M)">🔊</button>
+        <button id="btn-touch" title="Mostrar u ocultar los controles táctiles">🎮</button>
+        <button id="btn-full" title="Pantalla completa">⛶</button>
+      </div>
+
+      <div id="touch">
+        <button class="pad shoulder l" data-btn="L">L</button>
+        <button class="pad shoulder r" data-btn="R">R</button>
+        <div id="dpad"><span></span></div>
+        <div id="ab">
+          <button class="pad round b" data-btn="B">B</button>
+          <button class="pad round a" data-btn="A">A</button>
+        </div>
+        <div id="meta">
+          <button class="pad pill" data-btn="Select">Select</button>
+          <button class="pad pill" data-btn="Start">Start</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="library">
+      <div class="card">
+        <h1>WabGBA</h1>
+        <p id="status">Cargando el emulador…</p>
+        <ul id="roms"></ul>
+        <button id="btn-add" class="primary" disabled>Agregar ROM (.gba)</button>
+        <p class="hint">
+          La ROM y la partida se guardan sólo en este navegador. Nada se sube a ningún servidor.
+        </p>
+        <details>
+          <summary>Controles de teclado</summary>
+          <table>
+            <tr><td>Flechas</td><td>Cruceta</td></tr>
+            <tr><td>X / Z</td><td>A / B</td></tr>
+            <tr><td>A / S</td><td>L / R</td></tr>
+            <tr><td>Enter / Retroceso</td><td>Start / Select</td></tr>
+            <tr><td>Espacio (mantener)</td><td>Acelerar</td></tr>
+            <tr><td>P · M</td><td>Pausa · Silencio</td></tr>
+            <tr><td>F2 · F4</td><td>Guardar · cargar estado</td></tr>
+          </table>
+        </details>
+      </div>
+    </div>
+
+    <input id="file-rom" type="file" accept=".gba,.gbc,.gb" hidden />
+    <input id="file-sav" type="file" accept=".sav" hidden />
+    <div id="toast"></div>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
