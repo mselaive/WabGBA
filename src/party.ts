@@ -142,15 +142,21 @@ function isPartyAt(ram: Uint8Array, base: number): boolean {
   return true;
 }
 
-/** Busca dónde está el equipo del jugador. `hint`: dónde estaba la última vez. */
+/**
+ * Busca dónde está el equipo del jugador. `hint`: dónde estaba la última vez.
+ *
+ * El equipo rival está justo antes y tiene la misma forma, así que puede pasar por equipo
+ * del jugador si los bytes que lo preceden parecen una cantidad. Por eso, cuando un
+ * candidato tiene otro equipo válido 600 bytes más adelante, el del jugador es ese otro.
+ */
 export function findParty(ram: Uint8Array, hint: number | null): number | null {
-  if (hint !== null && isPartyAt(ram, hint)) return hint;
+  if (hint !== null && isPartyAt(ram, hint) && !isPartyAt(ram, hint + PARTY_BYTES)) return hint;
   for (let o = PARTY_BYTES + 4; o + PARTY_BYTES <= ram.length; o += 4) {
     // Descarte rápido antes de la comprobación completa.
     const language = ram[o + 18];
     const level = ram[o + 84];
     if (language < 1 || language > 7 || level < 1 || level > 100) continue;
-    if (isPartyAt(ram, o)) return o;
+    if (isPartyAt(ram, o)) return isPartyAt(ram, o + PARTY_BYTES) ? o + PARTY_BYTES : o;
   }
   return null;
 }

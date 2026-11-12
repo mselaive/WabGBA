@@ -582,7 +582,10 @@ async function inspectState() {
     const state = emu.getAutoSaveState();
     const snap = state ? await readState(state.data) : null;
     if (!snap) return;
-    partyBase = findParty(snap.ram, partyBase);
+    const found = findParty(snap.ram, partyBase);
+    // Si el equipo aparece en otro lugar, lo anotado antes ya no sirve para comparar.
+    if (found !== partyBase) lastHp.clear();
+    partyBase = found;
     if (partyBase === null) {
       lastHp.clear();
       return;
