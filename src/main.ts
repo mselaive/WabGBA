@@ -6,15 +6,19 @@ import mGBA, { type mGBAEmulator } from '@thenick775/mgba-wasm';
 import {
   ACHIEVEMENTS,
   BADGES,
-  CHAINS,
+  GROUPS,
   evaluate,
   loadUnlocked,
   pointsFor,
   rankFor,
-  type Achievement,
+  type Death,
+  type Run,
 } from './achievements';
+import * as controls from './controls';
+import { findParty, readEnemies, readParty, readState, type Mon } from './party';
 import { readSave, type Progress, type SaveResult } from './save';
 import { setSfx, sfx } from './sfx';
+import { speciesName } from './species';
 import * as sync from './sync';
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -108,6 +112,8 @@ function onGameSaved() {
     toast(synced ? '☁ Partida guardada y sincronizada' : 'Partida guardada');
     checkAchievements(false);
     playersCache = null;
+    // Guardar puede haber anotado una medalla o un torneo.
+    void loadFeed();
   }, 600);
 }
 
@@ -147,14 +153,12 @@ function showLogin(message = '') {
   setRegisterMode(false);
   loginError.textContent = message;
   loginPanel.hidden = false;
-  // Que el emulador no se coma las teclas mientras se escribe.
-  emu.toggleInput(false);
+  releaseAll();
   loginUser.focus();
 }
 
 function hideLogin() {
   loginPanel.hidden = true;
-  emu.toggleInput(hub.hidden);
   renderHub();
 }
 
@@ -186,6 +190,8 @@ async function submitLogin() {
     await stopGame();
     playersCache = null;
     catalogLoaded = false;
+    feedLoaded = false;
+    void loadAccountData();
     sfx('ok');
     hideLogin();
     toast(`¡Hola, ${session.username}!`);
@@ -201,14 +207,16 @@ async function logout() {
   await sync.signOut();
   playersCache = null;
   catalogLoaded = false;
+  feedLoaded = false;
+  feed = [];
   renderHub();
   showLogin();
 }
 
 function renderAccount() {
   const session = sync.getSession();
-  $('account').hidden = !cloud;
   $('account-name').textContent = session ? session.username : '';
+  $('btn-account').hidden = !cloud;
   $('btn-account').textContent = session ? 'SALIR' : 'ENTRAR';
 }
 
@@ -341,49 +349,330 @@ function myGameKey(): string {
   return rom ? stem(baseName(savePathFor(rom))) : '';
 }
 
-// ---------- Logros ----------
+// ---------- Historial ----------
+// Lo que va pasando en las partidas: bajas, medallas, torneos. Con cuentas vive en el
+// servidor y lo ven todos; sin cuentas queda en este navegador.
 
-const achvPop = $('achv-pop');
-const popQueue: Achievement[] = [];
+type FeedItem = sync.GameEvent & {
+  /** Captura guardada acá mismo (modo sin cuentas). */
+  shot?: string;
+};
+
+let feed: sync.GameEvent[] = [];
+let feedLoaded = false;
+/** Vidas por participante; las define la cuenta administradora. */
+let lives = 10;
+
+const localEvents = () => loadJson<FeedItem[]>('wabgba.events', []);
+
+/** El historial, de lo más nuevo a lo más viejo. */
+const feedItems = (): FeedItem[] => (shared() ? feed : localEvents());
+
+function deathsOf(user: string): Death[] {
+  return feedItems()
+    .filter((e) => e.type === 'death' && (e.username ?? '') === user)
+    .map((e) => ({ at: e.at, badges: Number((e.data as { badges?: number }).badges ?? 0) }));
+}
+
+const myDeaths = () => deathsOf(username());
+
+/** La partida activa más sus bajas: con esto se calculan logros y experiencia. */
+function myRun(): Run | null {
+  const save = mySave();
+  return save.ok ? { p: save.progress, deaths: myDeaths() } : null;
+}
+
+interface EventText {
+  icon: string;
+  title: string;
+  sub: string;
+}
+
+function describeEvent(e: FeedItem): EventText {
+  const who = e.username || myName(null);
+  if (e.type === 'death') {
+    const d = e.data as unknown as sync.DeathData;
+    const name = speciesName(d.species);
+    const called = d.nickname && d.nickname.toLowerCase() !== name.toLowerCase() ? `${d.nickname} (${name})` : name;
+    const versus = d.enemy
+      ? ` · contra un ${speciesName(d.enemy.species)}${d.enemy.wild ? ' salvaje' : ''} nv ${d.enemy.level}`
+      : '';
+    return {
+      icon: '💀',
+      title: `${who} perdió a ${called}`,
+      sub: `Nivel ${d.level}${versus}${d.poisoned ? ' · estaba envenenado' : ''}`,
+    };
+  }
+  if (e.type === 'badge') {
+    const n = Number((e.data as { n?: number }).n ?? 1);
+    return { icon: '🏅', title: `${who} consiguió la Medalla ${BADGES[n - 1] ?? '?'}`, sub: `Va ${n} de 8.` };
+  }
+  if (e.type === 'champion') return { icon: '👑', title: `${who} venció a la Liga`, sub: '¡Campeón!' };
+  const n = Number((e.data as { n?: number }).n ?? 0);
+  return {
+    icon: '⚔️',
+    title: `¡Torneo de las ${n} medallas!`,
+    sub: 'Ya llegaron todos. A pelear entre ustedes (por ahora, en Pokémon Showdown).',
+  };
+}
+
+/** Reintenta las bajas que no llegaron al servidor (por ejemplo, sin conexión). */
+async function flushPending() {
+  const key = `wabgba.pending.${username()}`;
+  const pending = loadJson<Parameters<typeof sync.reportDeath>[0][]>(key, []);
+  if (!pending.length) return;
+  const left: typeof pending = [];
+  for (const death of pending) {
+    try {
+      await sync.reportDeath({ ...death, image: death.image ? new Uint8Array(Object.values(death.image)) : null });
+    } catch {
+      left.push(death);
+    }
+  }
+  localStorage.setItem(key, JSON.stringify(left));
+}
+
+async function loadFeed() {
+  if (!shared()) return;
+  try {
+    await flushPending();
+    const res = await sync.events();
+    feed = res.events;
+    lives = res.lives;
+    feedLoaded = true;
+    announceNew();
+    if (!hub.hidden && tab !== 'play') renderHub();
+  } catch (e) {
+    feedLoaded = true;
+    if (e instanceof sync.SyncError && e.kind === 'auth') onCloudError(e);
+  }
+}
+
+/** Avisa de lo que pasó desde la última vez que se miró (lo de los demás). */
+function announceNew() {
+  const key = `wabgba.seen.${username()}`;
+  const seen = localStorage.getItem(key);
+  const newest = feed.reduce((n, e) => Math.max(n, e.id), 0);
+  localStorage.setItem(key, String(newest));
+  if (seen === null) return; // primera vez: no repasar todo el pasado
+  const fresh = feed.filter((e) => e.id > Number(seen) && e.username !== username()).reverse();
+  for (const e of fresh.slice(-4)) {
+    const text = describeEvent(e);
+    pop({
+      icon: text.icon,
+      label: e.type === 'death' ? '¡BAJA!' : e.type === 'tournament' ? '¡TORNEO!' : 'NOVEDAD',
+      title: text.title,
+      death: e.type === 'death',
+      sound: e.type === 'death' ? 'error' : 'unlock',
+    });
+  }
+}
+
+// ---------- Avisos grandes ----------
+
+interface Pop {
+  icon: string;
+  label: string;
+  title: string;
+  death?: boolean;
+  /** Dirección de una captura para mostrar al lado. */
+  shot?: string;
+  sound: 'unlock' | 'error' | 'ok';
+}
+
+const popEl = $('achv-pop');
+const popQueue: Pop[] = [];
 let popBusy = false;
 
 function showNextPop() {
-  const a = popQueue.shift();
-  if (!a) {
+  const next = popQueue.shift();
+  if (!next) {
     popBusy = false;
     return;
   }
   popBusy = true;
-  achvPop.querySelector('.icon')!.textContent = a.icon;
-  achvPop.querySelector('b')!.textContent = `${a.title}  +${a.points} XP`;
-  achvPop.classList.add('show');
-  sfx('unlock');
-  setTimeout(() => {
-    achvPop.classList.remove('show');
-    setTimeout(showNextPop, 450);
-  }, 3500);
+  popEl.querySelector('.icon')!.textContent = next.icon;
+  popEl.querySelector('small')!.textContent = next.label;
+  popEl.querySelector('b')!.textContent = next.title;
+  const shot = popEl.querySelector<HTMLImageElement>('.shot')!;
+  shot.hidden = !next.shot;
+  if (next.shot) shot.src = next.shot;
+  popEl.classList.toggle('death', !!next.death);
+  popEl.classList.add('show');
+  sfx(next.sound);
+  setTimeout(
+    () => {
+      popEl.classList.remove('show');
+      setTimeout(showNextPop, 450);
+    },
+    next.death ? 5000 : 3500,
+  );
+}
+
+function pop(item: Pop) {
+  popQueue.push(item);
+  if (!popBusy) showNextPop();
 }
 
 /** Lee la partida y desbloquea lo que corresponda. `quiet`: sin desfile de avisos. */
 function checkAchievements(quiet: boolean) {
-  const save = mySave();
+  const run = myRun();
   const key = myGameKey();
-  if (!save.ok || !key) return;
-  const fresh = evaluate(key, save.progress);
+  if (!run || !key) return;
+  const fresh = evaluate(key, run);
   if (!fresh.length || quiet) return;
   if (fresh.length > 3) {
     toast(`🏆 ${fresh.length} logros desbloqueados`);
     sfx('unlock');
-  } else {
-    popQueue.push(...fresh);
-    if (!popBusy) showNextPop();
+    return;
   }
+  for (const a of fresh) {
+    pop({
+      icon: a.icon,
+      label: '¡LOGRO DESBLOQUEADO!',
+      title: a.points ? `${a.title}  +${a.points} XP` : a.title,
+      sound: 'unlock',
+    });
+  }
+}
+
+// ---------- Detector de bajas ----------
+// Cada pocos segundos se le pide al emulador una foto de la consola y se mira el equipo:
+// si un Pokémon que tenía vida pasa a 0 PS, es una baja. Sólo cuentan los cambios vistos
+// en vivo, así un Pokémon que ya venía debilitado de antes no se anota de golpe.
+
+const WATCH_EVERY = 3000;
+let partyBase: number | null = null;
+const lastHp = new Map<string, number>();
+let watching = false;
+let lastPersist = 0;
+/** Si sacar la foto sale caro en este dispositivo, se espacia. */
+let watchSkip = 0;
+
+const deadKey = () => `wabgba.dead.${username()}.${gameCode}`;
+
+function resetWatch() {
+  partyBase = null;
+  lastHp.clear();
+}
+
+function watchTick() {
+  if (!running || paused || !hub.hidden || document.visibilityState !== 'visible') return;
+  if (watchSkip > 0) {
+    watchSkip--;
+    return;
+  }
+  const t0 = performance.now();
+  if (!emu.forceAutoSaveState()) return;
+  const cost = performance.now() - t0;
+  if (cost > 30) watchSkip = cost > 60 ? 3 : 1;
+  void inspectState();
+}
+
+/** Mira la última foto de la consola en busca de bajas. */
+async function inspectState() {
+  // La foto es también el punto de reanudación: se vuelca al navegador cada tanto.
+  if (Date.now() - lastPersist > 30_000) {
+    lastPersist = Date.now();
+    void persist();
+  }
+  if (!running || watching) return;
+  watching = true;
+  try {
+    const state = emu.getAutoSaveState();
+    const snap = state ? await readState(state.data) : null;
+    if (!snap) return;
+    partyBase = findParty(snap.ram, partyBase);
+    if (partyBase === null) {
+      lastHp.clear();
+      return;
+    }
+    const dead = loadJson<string[]>(deadKey(), []);
+    for (const mon of readParty(snap.ram, partyBase)) {
+      const before = lastHp.get(mon.key);
+      lastHp.set(mon.key, mon.hp);
+      if (mon.hp > 0 || !before || dead.includes(mon.key)) continue;
+      dead.push(mon.key);
+      localStorage.setItem(deadKey(), JSON.stringify(dead));
+      await onDeath(mon, readEnemies(snap.ram, partyBase), snap.image);
+    }
+  } catch (e) {
+    console.error('No se pudo revisar el equipo', e);
+  } finally {
+    watching = false;
+  }
+}
+
+async function onDeath(mon: Mon, enemies: Mon[], image: Uint8Array) {
+  const foe = enemies.find((e) => e.hp > 0) ?? enemies[0] ?? null;
+  // Los salvajes llevan el mismo "entrenador original" que el jugador; los de entrenador, no.
+  const enemy = foe ? { species: foe.species, level: foe.level, wild: foe.otId === mon.otId } : null;
+  const save = mySave();
+  const death = {
+    game: gameCode,
+    mon: { key: mon.key, species: mon.species, level: mon.level, nickname: mon.nickname },
+    enemy,
+    poisoned: mon.poisoned,
+    badges: save.ok ? save.progress.badgeCount : 0,
+    image,
+  };
+  const shot = URL.createObjectURL(new Blob([image.slice()], { type: 'image/png' }));
+  const name = speciesName(mon.species);
+  pop({
+    icon: '💀',
+    label: '¡BAJA!',
+    title: `${mon.nickname || name} cayó${enemy ? ` contra un ${speciesName(enemy.species)}` : ''}`,
+    death: true,
+    shot,
+    sound: 'error',
+  });
+
+  if (shared()) {
+    try {
+      await sync.reportDeath(death);
+    } catch {
+      // Sin conexión: queda en cola y se manda cuando vuelva.
+      const key = `wabgba.pending.${username()}`;
+      localStorage.setItem(key, JSON.stringify([...loadJson<unknown[]>(key, []), { ...death, image: [...image] }]));
+    }
+    playersCache = null;
+    await loadFeed();
+  } else {
+    const data: sync.DeathData = {
+      game: death.game,
+      species: mon.species,
+      level: mon.level,
+      nickname: mon.nickname,
+      enemy,
+      poisoned: mon.poisoned,
+      badges: death.badges,
+    };
+    const item: FeedItem = {
+      id: Date.now(),
+      username: null,
+      type: 'death',
+      at: Date.now(),
+      data: data as unknown as Record<string, unknown>,
+      image: false,
+      shot: await blobToDataUrl(new Blob([image.slice()], { type: 'image/png' })),
+    };
+    localStorage.setItem('wabgba.events', JSON.stringify([item, ...localEvents()].slice(0, 60)));
+  }
+  checkAchievements(false);
+}
+
+function blobToDataUrl(blob: Blob): Promise<string> {
+  return new Promise((resolve) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result));
+    reader.readAsDataURL(blob);
+  });
 }
 
 // ---------- Menú ----------
 
-type Tab = 'play' | 'missions' | 'trophies' | 'players';
-const TABS: Tab[] = ['play', 'missions', 'trophies', 'players'];
+type Tab = 'play' | 'feed' | 'trophies' | 'players';
+const TABS: Tab[] = ['play', 'feed', 'trophies', 'players'];
 let tab: Tab = 'play';
 
 function setHub(open: boolean) {
@@ -392,7 +681,7 @@ function setHub(open: boolean) {
     if (open) emu.pauseGame();
     else if (!paused) emu.resumeGame();
   }
-  emu.toggleInput(!open && loginPanel.hidden);
+  if (open) releaseAll();
   if (open) renderHub();
 }
 
@@ -425,7 +714,7 @@ function renderHub() {
   }
   for (const t of TABS) $(`tab-${t}`).hidden = t !== tab;
   if (tab === 'play') renderPlay();
-  else if (tab === 'missions') renderMissions();
+  else if (tab === 'feed') renderFeed();
   else if (tab === 'trophies') renderTrophies();
   else renderPlayers();
 }
@@ -683,11 +972,22 @@ function gems(badges: boolean[], big = false): HTMLElement {
   return row;
 }
 
+/** Las vidas que le quedan a alguien que ya perdió `deaths` Pokémon. */
+function hearts(deaths: number): HTMLElement {
+  const left = lives - deaths;
+  if (left <= 0) return el('span', 'lives out', '☠ SIN VIDAS');
+  const row = el('span', 'lives');
+  if (lives <= 12) for (let i = 0; i < lives; i++) row.append(el('i', i < left ? '' : 'lost', '♥'));
+  else row.append(el('i', '', '♥'), ` ${left}/${lives}`);
+  row.title = `${left} de ${lives} vidas`;
+  return row;
+}
+
 const playTime = (p: Progress) => `${p.hours}:${String(p.minutes).padStart(2, '0')} h`;
 
-function trainerCard(name: string, p: Progress | null, emptyText: string): HTMLElement {
+function trainerCard(name: string, run: Run | null, deaths: number, emptyText: string): HTMLElement {
   const card = el('div', 'box trainer');
-  const rank = rankFor(pointsFor(p));
+  const rank = rankFor(pointsFor(run));
   const who = el('div', 'who');
   who.append(el('b', '', name), el('span', 'rank', `NV ${rank.level} · ${rank.name.toUpperCase()}`));
   const xp = el('div', 'xp');
@@ -696,18 +996,15 @@ function trainerCard(name: string, p: Progress | null, emptyText: string): HTMLE
     el('span', '', rank.next ? `${rank.points} / ${rank.next} XP` : `${rank.points} XP`),
   );
   card.append(avatar(name), who, xp);
-  if (p) {
-    const stats = el('div', 'stats');
-    stats.append(
-      gems(p.badges),
-      el('span', '', `📕 ${p.owned}`),
-      el('span', '', `⏱ ${playTime(p)}`),
-      el('span', '', `💪 Nv ${p.maxLevel}`),
-    );
-    card.append(stats);
+  const stats = el('div', 'stats');
+  if (run) {
+    const p = run.p;
+    stats.append(gems(p.badges), el('span', '', `📕 ${p.owned}`), el('span', '', `⏱ ${playTime(p)}`), el('span', '', `💪 Nv ${p.maxLevel}`));
   } else {
-    card.append(el('p', 'stats empty', emptyText));
+    stats.append(el('span', '', emptyText));
   }
+  stats.append(hearts(deaths));
+  card.append(stats);
   return card;
 }
 
@@ -718,64 +1015,91 @@ function myName(p: Progress | null): string {
 function emptyReason(save: SaveResult): string {
   if (save.ok) return '';
   return save.reason === 'unsupported'
-    ? 'Por ahora las misiones sólo funcionan con Pokémon Rojo Fuego y Verde Hoja.'
+    ? 'Por ahora los logros sólo funcionan con Pokémon Rojo Fuego y Verde Hoja.'
     : 'Todavía no hay partida guardada. Guardá dentro del juego para empezar a sumar.';
 }
 
-// ----- Misiones -----
-
-function missionCard(a: Achievement, p: Progress | null, state: 'now' | 'done'): HTMLElement {
-  const node = el('div', 'mission ' + state);
-  node.append(
-    el('span', 'icon', a.icon),
-    el('b', '', a.title),
-    el('span', 'reward', state === 'done' ? '✔ HECHA' : `+${a.points} XP`),
-    el('small', '', a.desc),
-  );
-  if (state === 'now' && a.progress && p) {
-    const [cur, goal] = a.progress(p);
-    node.append(bar(cur, goal));
-  }
-  return node;
+function timeAgo(ms: number): string {
+  const min = Math.round((Date.now() - ms) / 60000);
+  if (min < 2) return 'recién';
+  if (min < 60) return `hace ${min} min`;
+  if (min < 60 * 24) return `hace ${Math.round(min / 60)} h`;
+  return `hace ${Math.round(min / 60 / 24)} d`;
 }
 
-function renderMissions() {
-  const save = mySave();
-  const p = save.ok ? save.progress : null;
-  const root = $('tab-missions');
-  const nodes: HTMLElement[] = [trainerCard(myName(p), p, emptyReason(save))];
+// ----- Historial -----
 
-  for (const chain of CHAINS) {
-    const list = ACHIEVEMENTS.filter((a) => a.chain === chain.id);
-    const done = list.map((a) => !!p && a.done(p));
-    const count = done.filter(Boolean).length;
-    const next = list.find((_, i) => !done[i]);
+/** Capturas ya bajadas del servidor, por id de evento. */
+const shots = new Map<number, string>();
 
-    const box = el('article', 'box chain' + (next ? '' : ' complete'));
-    const head = el('header');
-    const pips = el('div', 'pips');
-    done.forEach((d) => pips.append(el('i', d ? 'on' : '')));
-    head.append(el('h3', 'px-title', `${chain.icon} ${chain.title}`), pips, el('span', 'count', `${count}/${list.length}`));
-    box.append(head);
-    box.append(next ? missionCard(next, p, 'now') : missionCard(list[list.length - 1], p, 'done'));
+function eventCard(e: FeedItem): HTMLElement {
+  const text = describeEvent(e);
+  const card = el('article', `box event ${e.type}`);
+  card.append(el('span', 'icon', text.icon), el('b', '', text.title), el('span', 'when', timeAgo(e.at)), el('small', '', text.sub));
 
-    const all = el('details');
-    all.append(el('summary', '', 'Ver toda la cadena'));
-    const ol = el('ol');
-    list.forEach((a, i) => {
-      const li = el('li', done[i] ? 'done' : '', a.title);
-      li.append(el('span', '', `${a.points} XP`));
-      ol.append(li);
-    });
-    all.append(ol);
-    box.append(all);
-    nodes.push(box);
+  // Quien administra puede anular un evento (por si el detector se equivocó).
+  if (!shared() || isAdmin()) {
+    const undo = el('button', 'link dark undo', 'Anular');
+    undo.onclick = async () => {
+      if (!confirm(`¿Anular "${text.title}"? Deja de contar para las vidas y los logros.`)) return;
+      try {
+        if (shared()) {
+          await sync.deleteEvent(e.id);
+          playersCache = null;
+          await loadFeed();
+        } else {
+          localStorage.setItem('wabgba.events', JSON.stringify(localEvents().filter((x) => x.id !== e.id)));
+        }
+        renderHub();
+      } catch (err) {
+        onCloudError(err);
+      }
+    };
+    card.append(undo);
   }
-  root.replaceChildren(...nodes);
+
+  if (e.shot || e.image) {
+    const img = el('img', 'shot');
+    img.alt = 'El momento';
+    if (e.shot) img.src = e.shot;
+    else if (shots.has(e.id)) img.src = shots.get(e.id)!;
+    else {
+      void sync.eventImage(e.id).then((url) => {
+        if (!url) return;
+        shots.set(e.id, url);
+        img.src = url;
+      });
+    }
+    card.append(img);
+  }
+  return card;
+}
+
+function renderFeed() {
+  const root = $('tab-feed');
+  if (shared() && !feedLoaded) {
+    root.replaceChildren(el('p', 'note', 'Buscando novedades…'));
+    void loadFeed();
+    return;
+  }
+  const items = feedItems();
+  const deaths = myDeaths().length;
+  const mine = el('div', 'box');
+  const head = el('div', 'who');
+  head.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap';
+  head.append(el('h3', 'px-title', 'Tus vidas'), hearts(deaths));
+  mine.append(head);
+
+  root.replaceChildren(
+    mine,
+    ...(items.length
+      ? items.map(eventCard)
+      : [el('p', 'note', 'Todavía no pasó nada. Acá van a aparecer las bajas, las medallas y los torneos.')]),
+  );
   say(
-    p
-      ? 'Estas son tus misiones. Se revisan cada vez que guardás dentro del juego.'
-      : 'Las misiones se activan con tu primera partida guardada.',
+    deaths
+      ? `Llevás ${deaths} ${deaths === 1 ? 'baja' : 'bajas'}. Que no se repita.`
+      : 'Sin bajas por ahora. Las que haya van a quedar acá, con foto.',
   );
 }
 
@@ -783,38 +1107,39 @@ function renderMissions() {
 
 function renderTrophies() {
   const save = mySave();
-  const p = save.ok ? save.progress : null;
+  const run = myRun();
   const unlocked = loadUnlocked(myGameKey());
   const root = $('tab-trophies');
   const count = ACHIEVEMENTS.filter((a) => unlocked[a.id]).length;
 
-  const tiles = el('div', 'tiles');
-  for (const a of ACHIEVEMENTS) {
-    const when = unlocked[a.id];
-    const tile = el('button', 'tile' + (when ? ' done' : ''));
-    tile.append(el('span', 'icon', a.icon), el('small', '', a.title));
-    tile.onclick = () => {
-      sfx('move');
-      tiles.querySelector('.sel')?.classList.remove('sel');
-      tile.classList.add('sel');
-      let status = 'Todavía no lo tenés.';
-      if (when) status = `¡Conseguido el ${new Date(when).toLocaleDateString()}!`;
-      else if (a.progress && p) {
-        const [cur, goal] = a.progress(p);
-        status = `Vas ${Math.min(cur, goal).toLocaleString()} de ${goal.toLocaleString()}.`;
-      }
-      say(`${a.title} (+${a.points} XP). ${a.desc} ${status}`);
-    };
-    tiles.append(tile);
+  const nodes: HTMLElement[] = [
+    trainerCard(myName(run?.p ?? null), run, myDeaths().length, emptyReason(save)),
+    gems(run?.p.badges ?? [], true),
+  ];
+  for (const group of GROUPS) {
+    const tiles = el('div', 'tiles');
+    for (const a of ACHIEVEMENTS.filter((x) => x.group === group.id)) {
+      const when = unlocked[a.id];
+      const tile = el('button', 'tile' + (when ? ' done' : ''));
+      tile.append(el('span', 'icon', a.icon), el('small', '', a.title));
+      tile.onclick = () => {
+        sfx('move');
+        root.querySelector('.sel')?.classList.remove('sel');
+        tile.classList.add('sel');
+        let status = 'Todavía no lo tenés.';
+        if (when) status = `¡Conseguido el ${new Date(when).toLocaleDateString()}!`;
+        else if (a.progress && run) {
+          const [cur, goal] = a.progress(run);
+          status = `Vas ${Math.min(cur, goal).toLocaleString()} de ${goal.toLocaleString()}.`;
+        }
+        say(`${a.title}${a.points ? ` (+${a.points} XP)` : ''}. ${a.desc} ${status}`);
+      };
+      tiles.append(tile);
+    }
+    nodes.push(el('h2', 'px-title', group.title), tiles);
   }
-
-  root.replaceChildren(
-    el('h2', 'px-title', `Estuche de medallas`),
-    gems(p?.badges ?? [], true),
-    el('h2', 'px-title', `Logros · ${count} / ${ACHIEVEMENTS.length}`),
-    tiles,
-  );
-  say(p ? 'Tocá un logro o una medalla para ver de qué se trata.' : emptyReason(save));
+  root.replaceChildren(...nodes);
+  say(run ? `Tenés ${count} de ${ACHIEVEMENTS.length} logros. Tocá uno para ver de qué se trata.` : emptyReason(save));
 }
 
 // ----- Participantes -----
@@ -827,7 +1152,9 @@ async function loadPlayers() {
   if (playersLoading) return;
   playersLoading = true;
   try {
-    playersCache = await sync.players();
+    const res = await sync.players();
+    playersCache = res.players;
+    lives = res.lives;
     playersError = '';
   } catch (e) {
     playersError = sync.describe(e);
@@ -837,17 +1164,12 @@ async function loadPlayers() {
   if (tab === 'players' && !hub.hidden) renderPlayers();
 }
 
-function timeAgo(ms: number): string {
-  const min = Math.round((Date.now() - ms) / 60000);
-  if (min < 2) return 'recién';
-  if (min < 60) return `hace ${min} min`;
-  if (min < 60 * 24) return `hace ${Math.round(min / 60)} h`;
-  return `hace ${Math.round(min / 60 / 24)} d`;
-}
+/** La partida de un participante con sus bajas, para calcularle la experiencia. */
+const runOf = (pl: sync.Player): Run | null => (pl.progress ? { p: pl.progress, deaths: deathsOf(pl.username) } : null);
 
 function playerRow(player: sync.Player, pos: number, isMe: boolean): HTMLElement {
   const p = player.progress;
-  const rank = rankFor(pointsFor(p));
+  const rank = rankFor(pointsFor(runOf(player)));
   const row = el('button', 'box player' + (isMe ? ' me' : ''));
   const name = el('div', 'name');
   name.append(el('b', '', player.username));
@@ -855,16 +1177,19 @@ function playerRow(player: sync.Player, pos: number, isMe: boolean): HTMLElement
   const sub = el('div', 'sub');
   if (p) sub.append(gems(p.badges), el('span', '', `📕 ${p.owned}`), el('span', '', `⏱ ${playTime(p)}`));
   else sub.append(el('span', '', 'Sin partida todavía'));
+  sub.append(hearts(player.deaths));
   const pts = el('div', 'pts', `${rank.points} XP`);
   pts.append(el('small', '', rank.name.toUpperCase()));
   row.append(el('span', 'pos', `${pos}º`), avatar(player.username, true), name, pts, sub);
   row.onclick = () => {
     sfx('move');
+    const left = lives - player.deaths;
+    const fate = left > 0 ? `Le quedan ${left} de ${lives} vidas.` : 'Se quedó sin vidas.';
     say(
       p
         ? `${player.username}, ${rank.name}. Juega como ${p.name || '???'}: ${p.badgeCount} ` +
             `${p.badgeCount === 1 ? 'medalla' : 'medallas'}, ${p.owned} en la Pokédex y su mejor Pokémon es nivel ` +
-            `${p.maxLevel}.` +
+            `${p.maxLevel}. ${fate}` +
             (player.savedAt ? ` Guardó ${timeAgo(player.savedAt)}.` : '')
         : `${player.username} todavía no guardó ninguna partida.`,
     );
@@ -874,10 +1199,15 @@ function playerRow(player: sync.Player, pos: number, isMe: boolean): HTMLElement
 
 function renderPlayers() {
   const root = $('tab-players');
-  const save = mySave();
-  const mine: sync.Player = { username: myName(save.ok ? save.progress : null), savedAt: null, progress: save.ok ? save.progress : null };
+  const run = myRun();
+  const mine: sync.Player = {
+    username: myName(run?.p ?? null),
+    savedAt: null,
+    progress: run?.p ?? null,
+    deaths: myDeaths().length,
+  };
 
-  if (!cloud || !username()) {
+  if (!shared()) {
     root.replaceChildren(
       playerRow(mine, 1, true),
       el('p', 'note', cloud ? 'Entrá con tu cuenta para ver a los demás participantes.' : 'En este sitio no hay cuentas: sólo estás vos.'),
@@ -892,17 +1222,19 @@ function renderPlayers() {
     else say(playersError);
     return;
   }
+  if (!feedLoaded) void loadFeed();
 
   // Mi fila sale de la partida de este dispositivo, que es la más fresca.
   const list = playersCache
     .map((pl) => (pl.username === username() && mine.progress ? { ...pl, progress: mine.progress } : pl))
-    .sort((a, b) => pointsFor(b.progress) - pointsFor(a.progress) || a.username.localeCompare(b.username));
+    .sort((a, b) => pointsFor(runOf(b)) - pointsFor(runOf(a)) || a.username.localeCompare(b.username));
 
   const head = el('div', 'who');
   const refresh = el('button', 'px-btn small ghost', '↻ ACTUALIZAR');
   refresh.onclick = () => {
     sfx('ok');
     playersCache = null;
+    void loadFeed();
     renderPlayers();
   };
   head.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:8px';
@@ -910,6 +1242,114 @@ function renderPlayers() {
 
   root.replaceChildren(head, ...list.map((pl, i) => playerRow(pl, i + 1, pl.username === username())));
   say('El ranking se arma con la experiencia de cada partida. Tocá a alguien para ver cómo va.');
+}
+
+// ---------- Ajustes ----------
+
+const settingsPanel = $('settings');
+let bindings = controls.load();
+/** La acción que está esperando que se apriete una tecla. */
+let listening: controls.Action | null = null;
+
+function renderBindings() {
+  $('bindings').replaceChildren(
+    ...controls.ACTIONS.map((action) => {
+      const row = el('button', 'binding' + (listening === action ? ' listening' : ''));
+      row.type = 'button';
+      row.append(
+        el('span', '', controls.LABELS[action]),
+        el('kbd', '', listening === action ? '…' : controls.keyLabel(bindings[action])),
+      );
+      row.onclick = () => {
+        sfx('move');
+        listening = listening === action ? null : action;
+        renderBindings();
+        row.blur();
+      };
+      return row;
+    }),
+  );
+}
+
+function saveBindings() {
+  controls.store(bindings);
+  // Con cuenta, los controles viajan a los otros dispositivos.
+  if (shared()) void sync.savePrefs({ controls: bindings }).catch(() => undefined);
+}
+
+function setBinding(action: controls.Action, code: string) {
+  // Si la tecla ya estaba en otra acción, se intercambian.
+  for (const other of controls.ACTIONS) {
+    if (other !== action && bindings[other] === code) bindings[other] = bindings[action];
+  }
+  bindings[action] = code;
+  listening = null;
+  saveBindings();
+  sfx('ok');
+  renderBindings();
+}
+
+async function openSettings() {
+  sfx('ok');
+  listening = null;
+  renderBindings();
+  const admin = shared() && isAdmin();
+  $('admin').hidden = !admin;
+  $('set-status').textContent = '';
+  settingsPanel.hidden = false;
+  if (!admin) return;
+  try {
+    const s = await sync.getSettings();
+    lives = s.lives;
+    $<HTMLInputElement>('set-lives').value = String(s.lives);
+    $<HTMLInputElement>('set-webhook').value = s.webhook ?? '';
+  } catch (e) {
+    $('set-status').textContent = sync.describe(e);
+  }
+}
+
+function closeSettings() {
+  sfx('back');
+  listening = null;
+  settingsPanel.hidden = true;
+  if (!hub.hidden) renderHub();
+}
+
+async function saveRules() {
+  const status = $('set-status');
+  const value = Number($<HTMLInputElement>('set-lives').value);
+  const webhook = $<HTMLInputElement>('set-webhook').value.trim();
+  if (!Number.isInteger(value) || value < 1 || value > 99) {
+    status.textContent = 'Las vidas tienen que ser un número entre 1 y 99.';
+    sfx('error');
+    return;
+  }
+  status.textContent = 'Guardando…';
+  try {
+    await sync.saveSettings(value, webhook);
+    lives = value;
+    playersCache = null;
+    status.textContent = webhook ? '¡Guardado! Si el webhook es nuevo, ya debería haber llegado un mensaje al canal.' : '¡Guardado!';
+    sfx('ok');
+  } catch (e) {
+    status.textContent = sync.describe(e);
+    sfx('error');
+  }
+}
+
+/** Trae lo que depende de la cuenta: controles guardados e historial. */
+async function loadAccountData() {
+  if (!shared()) return;
+  try {
+    const prefs = await sync.getPrefs();
+    if (prefs.controls) {
+      bindings = controls.normalize(prefs.controls);
+      controls.store(bindings);
+    }
+  } catch {
+    /* sin conexión: quedan los controles de este dispositivo */
+  }
+  await loadFeed();
 }
 
 // ---------- Juego ----------
@@ -977,6 +1417,7 @@ async function startGameInner(name: string) {
     return;
   }
   running = true;
+  resetWatch();
   localStorage.setItem('wabgba.lastRom', name);
   // Subir lo que este dispositivo tenga pendiente.
   const st = sync.getState(gameCode);
@@ -1028,25 +1469,39 @@ function exportSave() {
 }
 
 // ---------- Teclado ----------
+// Las teclas las maneja la página (no el emulador), para que cada uno las configure.
 
-const KEYS: [sdlKey: string, gba: string][] = [
-  ['X', 'A'],
-  ['Z', 'B'],
-  ['A', 'L'],
-  ['S', 'R'],
-  ['Return', 'Start'],
-  ['Backspace', 'Select'],
-  ['Up', 'Up'],
-  ['Down', 'Down'],
-  ['Left', 'Left'],
-  ['Right', 'Right'],
-];
+const held = new Set<string>();
+
+function actionFor(code: string): controls.Action | null {
+  for (const action of controls.ACTIONS) if (bindings[action] === code) return action;
+  return null;
+}
+
+/** Suelta todo lo que estuviera apretado (al abrir un menú o perder el foco). */
+function releaseAll() {
+  for (const button of held) emu.buttonUnpress(button);
+  held.clear();
+  if (holdingFast) {
+    holdingFast = false;
+    if (running) applySpeed();
+  }
+}
 
 function setupKeyboard() {
-  for (const [key, gba] of KEYS) emu.bindKey(key, gba);
-
   window.addEventListener('keydown', (e) => {
     if (!loginPanel.hidden) return;
+
+    if (!settingsPanel.hidden) {
+      if (listening) {
+        e.preventDefault();
+        if (e.code === 'Escape') {
+          listening = null;
+          renderBindings();
+        } else setBinding(listening, e.code);
+      } else if (e.code === 'Escape') closeSettings();
+      return;
+    }
 
     // En el menú: izquierda y derecha cambian de pestaña, Escape vuelve al juego.
     if (!hub.hidden) {
@@ -1058,26 +1513,37 @@ function setupKeyboard() {
     }
 
     if (!running) return;
-    if (e.code === 'Space') {
+    const action = actionFor(e.code);
+    if (action) {
       e.preventDefault();
-      if (!holdingFast) {
+      if (e.repeat) return;
+      if (action === 'Fast') {
         holdingFast = true;
         applySpeed();
+      } else {
+        held.add(action);
+        emu.buttonPress(action);
       }
-    } else if (e.repeat) {
       return;
-    } else if (e.code === 'KeyP') setPaused(!paused);
+    }
+    if (e.repeat) return;
+    if (e.code === 'KeyP') setPaused(!paused);
     else if (e.code === 'KeyM') {
       muted = !muted;
       applyVolume();
     } else if (e.code === 'Escape') void openHub();
   });
+
   window.addEventListener('keyup', (e) => {
-    if (e.code === 'Space' && holdingFast) {
-      holdingFast = false;
-      if (running) applySpeed();
-    }
+    const action = actionFor(e.code);
+    if (action === 'Fast') {
+      if (holdingFast) {
+        holdingFast = false;
+        if (running) applySpeed();
+      }
+    } else if (action && held.delete(action)) emu.buttonUnpress(action);
   });
+  window.addEventListener('blur', releaseAll);
 }
 
 // ---------- Controles táctiles ----------
@@ -1166,6 +1632,16 @@ function setupUi() {
     b.onclick = () => setTab(b.dataset.tab as Tab);
   }
   $('btn-resume').onclick = closeHub;
+  $('btn-settings').onclick = () => void openSettings();
+  $('btn-settings-close').onclick = closeSettings;
+  $('btn-controls-reset').onclick = () => {
+    bindings = { ...controls.DEFAULTS };
+    listening = null;
+    saveBindings();
+    sfx('ok');
+    renderBindings();
+  };
+  $('btn-set-save').onclick = () => void saveRules();
   $('btn-export').onclick = exportSave;
   $('btn-account').onclick = () => (sync.getSession() ? void logout() : showLogin());
   fileRom.onchange = () => {
@@ -1221,11 +1697,13 @@ async function main() {
 
   emu.addCoreCallbacks({
     saveDataUpdatedCallback: onGameSaved,
-    autoSaveStateCapturedCallback: () => void persist(),
+    autoSaveStateCapturedCallback: () => void inspectState(),
     coreCrashedCallback: () => toast('El juego se colgó. Recargá la página.'),
   });
   // Sin rebobinar: lo único que cuenta es el guardado del juego.
   emu.setCoreSettings({ rewindEnable: false });
+  // El teclado lo maneja la página, con los controles de cada uno.
+  emu.toggleInput(false);
 
   setupUi();
   setupKeyboard();
@@ -1247,6 +1725,12 @@ async function main() {
   const account = await sync.check();
   cloud = account !== 'none';
   setHub(true);
+  void loadAccountData();
+  setInterval(watchTick, WATCH_EVERY);
+  // Novedades de los demás, mientras la página esté a la vista.
+  setInterval(() => {
+    if (document.visibilityState === 'visible') void loadFeed();
+  }, 30_000);
   if (account === 'out' || (account === 'offline' && !sync.getSession())) showLogin();
   console.log(`${emu.version.projectName} ${emu.version.projectVersion}`);
 }

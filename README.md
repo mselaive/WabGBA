@@ -15,12 +15,20 @@ Emulador de Game Boy Advance en el navegador, de uso personal. Corre sobre
   dentro del juego y se baja al abrirlo en otro dispositivo. Cada cuenta tiene su propia
   partida, aunque todos usen la misma ROM. Si dos dispositivos cambiaron, pregunta cuál
   conservar.
-- **Misiones y logros** para Pokémon Rojo Fuego / Verde Hoja: medallas, Liga, Pokédex,
-  equipo y más. Se leen del `.sav` cada vez que guardás dentro del juego (`src/save.ts`).
-  Cada uno da experiencia, que sube el rango de entrenador. Las misiones son los mismos
-  logros agrupados en cadenas; para sumar uno nuevo, agregalo en `src/achievements.ts`.
-- **Participantes:** ranking de todas las cuentas con sus medallas, Pokédex y experiencia.
+- **Randomlocke.** El sitio mira el equipo en la memoria del juego cada pocos segundos
+  (`src/party.ts`): cuando un Pokémon se queda sin PS anota la baja con una captura del
+  momento, contra quién fue, y le descuenta una vida al entrenador. Las vidas las define la
+  cuenta administradora en ⚙ Ajustes, que también puede anular una baja mal detectada.
+- **Historial y avisos.** Bajas, medallas y torneos quedan en una pestaña para todos y saltan
+  como aviso mientras jugás. Con un webhook de Discord (⚙ Ajustes) también van al canal.
+- **Torneos.** Cuando todos los que juegan una ROM llegan a la 3ª, 6ª u 8ª medalla, el sitio
+  lo anuncia. Los combates en sí todavía se hacen por fuera.
+- **Logros** de randomlocke para Rojo Fuego / Verde Hoja (`src/achievements.ts`): medallas,
+  Liga, llegar lejos sin bajas, y algunos de la vergüenza. Dan experiencia y rango.
+- **Participantes:** ranking de todas las cuentas con medallas, Pokédex, vidas y experiencia.
   El servidor lo arma leyendo la partida que cada uno sube, no lo que diga el navegador.
+- **Controles editables.** Cada uno reasigna sus teclas en ⚙ Ajustes; con cuenta, viajan
+  entre dispositivos.
 - **Estética de consola:** todo dibujado con CSS y fuentes pixel (Press Start 2P y Pixelify
   Sans, incluidas en el build), sin imágenes ni assets de ningún juego.
 - **Teclado y táctil.** Cruceta y botones en pantalla para el teléfono.
@@ -29,16 +37,10 @@ La partida en la nube se identifica por el archivo de la ROM (código del juego 
 huella del archivo): dos randomizaciones distintas son juegos y partidas distintas. Las ROMs
 se guardan en D1 partidas en trozos de 1 MB (`functions/api/roms`).
 
-## Controles
+## Controles de fábrica
 
-| Tecla               | GBA              |
-| ------------------- | ---------------- |
-| Flechas             | Cruceta          |
-| X / Z               | A / B            |
-| A / S               | L / R            |
-| Enter / Retroceso   | Start / Select   |
-| Espacio (mantener)  | Acelerar         |
-| P · M               | Pausa · Silencio |
+Flechas (cruceta), X / Z (A / B), A / S (L / R), Enter / Retroceso (Start / Select) y
+Espacio para acelerar. Se cambian en ⚙ Ajustes. Fijas: P pausa, M silencia, Escape abre el menú.
 
 ## Desarrollo
 

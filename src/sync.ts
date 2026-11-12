@@ -33,7 +33,8 @@ export type SyncErrorKind =
   | 'bad-invite'
   | 'invalid'
   | 'forbidden'
-  | 'too-big';
+  | 'too-big'
+  | 'bad-webhook';
 
 export class SyncError extends Error {
   constructor(public kind: SyncErrorKind) {
@@ -54,6 +55,7 @@ export function describe(e: unknown): string {
     invalid: 'Usuario de 3 a 20 letras o números, y contraseña de 6 o más.',
     forbidden: 'Sólo la cuenta administradora puede hacer eso.',
     'too-big': 'El archivo es demasiado grande.',
+    'bad-webhook': 'Eso no parece un webhook de Discord.',
   }[kind];
 }
 
@@ -212,13 +214,114 @@ export interface Player {
   username: string;
   savedAt: number | null;
   progress: import('./save').Progress | null;
+  /** Pokémon perdidos en total. */
+  deaths: number;
 }
 
-export async function players(): Promise<Player[]> {
-  const res = await call('players');
-  if (res.status === 401) throw new SyncError('auth');
-  if (!res.ok || !isJson(res)) throw new SyncError(isJson(res) ? 'server' : 'not-configured');
-  return ((await res.json()) as { players: Player[] }).players;
+export async function players(): Promise<{ players: Player[]; lives: number }> {
+  const res = await okJson(await call('players'));
+  return (await res.json()) as { players: Player[]; lives: number };
+}
+
+// ---------- Historial ----------
+
+export interface DeathData {
+  game: string;
+  species: number;
+  level: number;
+  nickname: string;
+  enemy: { species: number; level: number; wild: boolean } | null;
+  poisoned: boolean;
+  /** Medallas que tenía al momento de la baja. */
+  badges: number;
+}
+
+export interface GameEvent {
+  id: number;
+  /** null: lo anota el sitio (por ejemplo, un torneo). */
+  username: string | null;
+  type: 'death' | 'badge' | 'champion' | 'tournament';
+  at: number;
+  data: Record<string, unknown>;
+  image: boolean;
+}
+
+export async function events(): Promise<{ events: GameEvent[]; lives: number }> {
+  const res = await okJson(await call('events'));
+  return (await res.json()) as { events: GameEvent[]; lives: number };
+}
+
+/** Anota una baja. `image`: PNG de la pantalla en ese momento. */
+export async function reportDeath(death: {
+  game: string;
+  mon: { key: string; species: number; level: number; nickname: string };
+  enemy: DeathData['enemy'];
+  poisoned: boolean;
+  badges: number;
+  image: Uint8Array | null;
+}): Promise<void> {
+  let image: string | null = null;
+  if (death.image) {
+    let bin = '';
+    for (const b of death.image) bin += String.fromCharCode(b);
+    image = btoa(bin);
+  }
+  await okJson(
+    await call('events', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...death, image }),
+    }),
+  );
+}
+
+/** La captura de un evento, como dirección que se puede poner en un <img>. */
+export async function eventImage(id: number): Promise<string | null> {
+  const res = await call(`events/${id}`);
+  if (!res.ok || isJson(res)) return null;
+  return URL.createObjectURL(await res.blob());
+}
+
+export async function deleteEvent(id: number): Promise<void> {
+  await okJson(await call(`events/${id}`, { method: 'DELETE' }));
+}
+
+// ---------- Reglas del sitio y preferencias ----------
+
+export interface SiteSettings {
+  lives: number;
+  discord: boolean;
+  /** Sólo le llega a la cuenta administradora. */
+  webhook?: string;
+}
+
+export async function getSettings(): Promise<SiteSettings> {
+  const res = await okJson(await call('settings'));
+  return (await res.json()) as SiteSettings;
+}
+
+export async function saveSettings(lives: number, webhook: string): Promise<void> {
+  const res = await call('settings', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ lives, webhook }),
+  });
+  if (res.status === 400) {
+    const body = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new SyncError(body.error === 'bad-webhook' ? 'bad-webhook' : 'invalid');
+  }
+  await okJson(res);
+}
+
+export async function getPrefs(): Promise<Record<string, unknown>> {
+  const res = await okJson(await call('prefs'));
+  return ((await res.json()) as { prefs: Record<string, unknown> }).prefs ?? {};
+}
+
+export async function savePrefs(prefs: Record<string, unknown>): Promise<void> {
+  await okJson(
+    await call('prefs', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(prefs) }),
+  );
 }
 
 // ---------- Partida ----------

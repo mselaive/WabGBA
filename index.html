@@ -43,15 +43,16 @@
     <div id="hub" class="scene">
       <header id="hub-head">
         <div class="logo" aria-label="WabGBA"><span>W</span><span>a</span><span>b</span><span class="alt">G</span><span class="alt">B</span><span class="alt">A</span></div>
-        <div id="account" hidden>
+        <div id="account">
           <span id="account-name"></span>
-          <button id="btn-account" class="px-btn small">ENTRAR</button>
+          <button id="btn-settings" class="px-btn small ghost" title="Controles y ajustes">⚙</button>
+          <button id="btn-account" class="px-btn small" hidden>ENTRAR</button>
         </div>
       </header>
 
       <nav id="tabs">
         <button data-tab="play"><i>🎮</i><span>JUGAR</span></button>
-        <button data-tab="missions"><i>📜</i><span>MISIONES</span></button>
+        <button data-tab="feed"><i>📜</i><span>HISTORIAL</span></button>
         <button data-tab="trophies"><i>🏆</i><span>LOGROS</span></button>
         <button data-tab="players"><i>👥</i><span>PARTICIPANTES</span></button>
       </nav>
@@ -61,21 +62,10 @@
           <button id="btn-resume" class="px-btn big" hidden>▶ VOLVER AL JUEGO</button>
           <h2 class="px-title">Tus cartuchos</h2>
           <ul id="roms"></ul>
-          <details class="box soft">
-            <summary>Controles de teclado</summary>
-            <table>
-              <tr><td>Flechas</td><td>Cruceta</td></tr>
-              <tr><td>X / Z</td><td>A / B</td></tr>
-              <tr><td>A / S</td><td>L / R</td></tr>
-              <tr><td>Enter / Retroceso</td><td>Start / Select</td></tr>
-              <tr><td>Espacio (mantener)</td><td>Acelerar</td></tr>
-              <tr><td>P · M</td><td>Pausa · Silencio</td></tr>
-            </table>
-          </details>
           <p class="hint" id="play-note"></p>
           <button id="btn-export" class="link" hidden>Descargar una copia de la partida</button>
         </section>
-        <section id="tab-missions" hidden></section>
+        <section id="tab-feed" hidden></section>
         <section id="tab-trophies" hidden></section>
         <section id="tab-players" hidden></section>
       </main>
@@ -125,9 +115,40 @@
       </div>
     </div>
 
+    <!-- Ajustes: controles (todos) y reglas del sitio (sólo quien administra) -->
+    <div id="settings" class="scene" hidden>
+      <div class="panel">
+        <header>
+          <h2 class="px-title">⚙ Ajustes</h2>
+          <button id="btn-settings-close" class="px-btn small">✕ CERRAR</button>
+        </header>
+
+        <section class="box">
+          <h3 class="px-title">Controles</h3>
+          <p class="sub">Tocá una acción y después la tecla que quieras usar.</p>
+          <div id="bindings"></div>
+          <button id="btn-controls-reset" class="link dark" type="button">Volver a los de fábrica</button>
+        </section>
+
+        <section id="admin" class="box" hidden>
+          <h3 class="px-title">Reglas del randomlocke</h3>
+          <p class="sub">Sólo vos ves esta parte.</p>
+          <label><span>VIDAS POR PARTICIPANTE</span>
+            <input id="set-lives" type="number" min="1" max="99" />
+          </label>
+          <label><span>WEBHOOK DE DISCORD (OPCIONAL)</span>
+            <input id="set-webhook" type="url" placeholder="https://discord.com/api/webhooks/…" autocomplete="off" spellcheck="false" />
+          </label>
+          <p id="set-status" class="sub"></p>
+          <button id="btn-set-save" class="px-btn" type="button">GUARDAR REGLAS</button>
+        </section>
+      </div>
+    </div>
+
     <div id="achv-pop" class="box">
+      <img class="shot" alt="" hidden />
       <span class="icon"></span>
-      <div><small>¡LOGRO DESBLOQUEADO!</small><b></b></div>
+      <div><small></small><b></b></div>
     </div>
 
     <input id="file-rom" type="file" accept=".gba,.gbc,.gb" hidden />
