@@ -16,7 +16,8 @@ import {
 } from './achievements';
 import * as controls from './controls';
 import { findParty, readEnemies, readParty, readState, type Mon } from './party';
-import { readSave, type Progress, type SaveResult } from './save';
+import { placeName } from './places';
+import { readSave, readSavedMons, type Progress, type SaveResult } from './save';
 import { setSfx, sfx } from './sfx';
 import { speciesName } from './species';
 import * as sync from './sync';
@@ -112,6 +113,7 @@ function onGameSaved() {
     toast(synced ? '☁ Partida guardada y sincronizada' : 'Partida guardada');
     checkAchievements(false);
     playersCache = null;
+    await noteSavedCatches();
     // Guardar puede haber anotado una medalla o un torneo.
     void loadFeed();
   }, 600);
@@ -394,10 +396,22 @@ function describeEvent(e: FeedItem): EventText {
     const versus = d.enemy
       ? ` · contra un ${speciesName(d.enemy.species)}${d.enemy.wild ? ' salvaje' : ''} nv ${d.enemy.level}`
       : '';
+    const origin = placeName(d.met);
     return {
       icon: '💀',
       title: `${who} perdió a ${called}`,
-      sub: `Nivel ${d.level}${versus}${d.poisoned ? ' · estaba envenenado' : ''}`,
+      sub: `Nivel ${d.level}${versus}${d.poisoned ? ' · estaba envenenado' : ''}${origin ? ` · venía de ${origin}` : ''}`,
+    };
+  }
+  if (e.type === 'catch') {
+    const c = e.data as unknown as sync.CatchData;
+    const name = speciesName(c.species);
+    const called = c.nickname && c.nickname.toLowerCase() !== name.toLowerCase() ? `a ${c.nickname} (${name})` : `un ${name}`;
+    const place = placeName(c.met);
+    return {
+      icon: '🔴',
+      title: `${who} ${c.silent ? 'ya tenía' : 'atrapó'} ${called}`,
+      sub: `Nivel ${c.level}${place ? ` · ${place}` : ''}${c.boxed ? ' · al PC' : ''}`,
     };
   }
   if (e.type === 'badge') {
@@ -471,12 +485,14 @@ function announceNew() {
   const newest = feed.reduce((n, e) => Math.max(n, e.id), 0);
   localStorage.setItem(key, String(newest));
   if (seen === null) return; // primera vez: no repasar todo el pasado
-  const fresh = feed.filter((e) => e.id > Number(seen) && e.username !== username()).reverse();
+  const fresh = feed
+    .filter((e) => e.id > Number(seen) && e.username !== username() && !(e.data as { silent?: boolean }).silent)
+    .reverse();
   for (const e of fresh.slice(-4)) {
     const text = describeEvent(e);
     pop({
       icon: text.icon,
-      label: e.type === 'death' ? '¡BAJA!' : e.type === 'tournament' ? '¡TORNEO!' : 'NOVEDAD',
+      label: e.type === 'death' ? '¡BAJA!' : e.type === 'tournament' ? '¡TORNEO!' : e.type === 'catch' ? '¡CAPTURA!' : 'NOVEDAD',
       title: text.title,
       death: e.type === 'death',
       sound: e.type === 'death' ? 'error' : 'unlock',
@@ -566,6 +582,8 @@ let lastPersist = 0;
 let watchSkip = 0;
 
 const deadKey = () => `wabgba.dead.${username()}.${gameCode}`;
+/** Los Pokémon que ya se sabe que esta cuenta tiene en este juego. */
+const caughtKey = () => `wabgba.caught.${username()}.${gameCode}`;
 
 function resetWatch() {
   partyBase = null;
@@ -607,7 +625,9 @@ async function inspectState() {
       return;
     }
     const dead = loadJson<string[]>(deadKey(), []);
-    for (const mon of readParty(snap.ram, partyBase)) {
+    const party = readParty(snap.ram, partyBase);
+    await noteCatches(party, false, snap.image);
+    for (const mon of party) {
       const before = lastHp.get(mon.key);
       lastHp.set(mon.key, mon.hp);
       if (mon.hp > 0 || !before || dead.includes(mon.key)) continue;
@@ -622,6 +642,79 @@ async function inspectState() {
   }
 }
 
+// ---------- Capturas ----------
+// Un Pokémon que aparece en el equipo y no estaba anotado es una captura (o un regalo, o un
+// intercambio). Los que van directo al PC se ven recién al guardar, leyendo las cajas.
+
+let notingCatches = false;
+
+async function noteCatches(mons: Mon[], boxed: boolean, image: Uint8Array | null) {
+  if (!shared() || !gameCode || notingCatches) return;
+  const known = loadJson<string[] | null>(caughtKey(), null);
+  const fresh = mons.filter((m) => !m.egg && !known?.includes(m.key));
+  if (!fresh.length) {
+    if (known === null && mons.length) localStorage.setItem(caughtKey(), '[]');
+    return;
+  }
+  // La primera vez en este dispositivo se anota lo que ya había sin anunciarlo, salvo que
+  // sea el inicial recién elegido.
+  const starter = !boxed && mons.length === 1 && mons[0].level <= 5;
+  const silent = known === null && !starter;
+  notingCatches = true;
+  try {
+    const list = known ?? [];
+    // Al anotar por primera vez, también lo que ya estaba guardado en el PC.
+    const stored = silent && !boxed ? (readSavedMons(emu.getSave())?.boxed ?? []).filter((m) => !m.egg) : [];
+    for (const mon of stored) {
+      if (list.includes(mon.key)) continue;
+      await sync.reportCatch({
+        game: gameCode,
+        mon: { key: mon.key, species: mon.species, level: mon.metLevel || 1, nickname: mon.nickname, met: mon.met },
+        boxed: true,
+        silent: true,
+        image: null,
+      });
+      list.push(mon.key);
+    }
+    for (const mon of fresh) {
+      const isNew = await sync.reportCatch({
+        game: gameCode,
+        mon: { key: mon.key, species: mon.species, level: mon.level || mon.metLevel || 1, nickname: mon.nickname, met: mon.met },
+        boxed,
+        silent,
+        image: silent ? null : image,
+      });
+      list.push(mon.key);
+      localStorage.setItem(caughtKey(), JSON.stringify(list));
+      if (isNew && !silent) {
+        const name = speciesName(mon.species);
+        const place = placeName(mon.met);
+        pop({
+          icon: '🔴',
+          label: boxed ? '¡CAPTURA! (AL PC)' : '¡CAPTURA!',
+          title: `${name}${place ? ` · ${place}` : ''}`,
+          shot: image ? URL.createObjectURL(new Blob([image.slice()], { type: 'image/png' })) : undefined,
+          sound: 'unlock',
+        });
+      }
+    }
+    void loadFeed();
+  } catch {
+    /* sin conexión: quedan sin anotar y se reintenta en la próxima revisión */
+  } finally {
+    notingCatches = false;
+  }
+}
+
+/** Al guardar: repasa el equipo y las cajas del PC de la partida guardada. */
+async function noteSavedCatches() {
+  const saved = running ? readSavedMons(emu.getSave()) : null;
+  if (!saved) return;
+  // Si nunca se anotó nada acá, primero el equipo: así el resto entra como "ya lo tenía".
+  await noteCatches(saved.party, false, null);
+  await noteCatches(saved.boxed, true, null);
+}
+
 async function onDeath(mon: Mon, enemies: Mon[], image: Uint8Array) {
   const foe = enemies.find((e) => e.hp > 0) ?? enemies[0] ?? null;
   // Los salvajes llevan el mismo "entrenador original" que el jugador; los de entrenador, no.
@@ -629,7 +722,7 @@ async function onDeath(mon: Mon, enemies: Mon[], image: Uint8Array) {
   const save = mySave();
   const death = {
     game: gameCode,
-    mon: { key: mon.key, species: mon.species, level: mon.level, nickname: mon.nickname },
+    mon: { key: mon.key, species: mon.species, level: mon.level, nickname: mon.nickname, met: mon.met },
     enemy,
     poisoned: mon.poisoned,
     badges: save.ok ? save.progress.badgeCount : 0,
@@ -665,6 +758,7 @@ async function onDeath(mon: Mon, enemies: Mon[], image: Uint8Array) {
       enemy,
       poisoned: mon.poisoned,
       badges: death.badges,
+      met: mon.met,
     };
     const item: FeedItem = {
       id: Date.now(),
@@ -1218,7 +1312,8 @@ function renderFeed() {
     void loadFeed();
     return;
   }
-  const items = feedItems();
+  // Lo que ya se tenía de antes queda anotado, pero no se lista.
+  const items = feedItems().filter((e) => !(e.data as { silent?: boolean }).silent);
   const deaths = myDeaths().length;
   const mine = el('div', 'box');
   const head = el('div', 'who');
@@ -1230,7 +1325,7 @@ function renderFeed() {
     mine,
     ...(items.length
       ? items.map(eventCard)
-      : [el('p', 'note', 'Todavía no pasó nada. Acá van a aparecer las bajas, las medallas y los torneos.')]),
+      : [el('p', 'note', 'Todavía no pasó nada. Acá van a aparecer las capturas, las bajas, las medallas y los torneos.')]),
   );
   say(
     deaths
@@ -1720,6 +1815,7 @@ async function resetRun() {
     dropFile(`${paths.autosave}/${stem(rom)}_auto.ss`);
     localStorage.removeItem(`wabgba.logros.${logrosKey}`);
     localStorage.removeItem(deadKey());
+    localStorage.removeItem(caughtKey());
     sync.clearState(gameCode);
     if (!shared()) {
       const kept = localEvents().filter((e) => (e.data as { game?: string }).game !== gameCode);

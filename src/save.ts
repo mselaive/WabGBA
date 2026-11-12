@@ -5,6 +5,8 @@
 // salen del desensamblado público (pret/pokefirered, include/global.h) y son los
 // mismos en todos los idiomas.
 
+import { readBoxMon, readMon, type Mon } from './party';
+
 const SECTOR = 0x1000;
 const SECTOR_DATA = 0xf80;
 const SECTORS_PER_SLOT = 14;
@@ -99,6 +101,35 @@ function currentSlot(data: Uint8Array, dv: DataView): Uint8Array[] | null {
     if (!best || index > best.index) best = { index, sections };
   }
   return best?.sections ?? null;
+}
+
+/**
+ * Todos los Pokémon de la partida guardada: el equipo y las cajas del PC. Sirve para ver
+ * las capturas que fueron directo al PC porque el equipo estaba lleno.
+ */
+export function readSavedMons(data: Uint8Array | null): { party: Mon[]; boxed: Mon[] } | null {
+  if (!data || data.length < SECTOR * SECTORS_PER_SLOT) return null;
+  const sections = currentSlot(data, new DataView(data.buffer, data.byteOffset, data.byteLength));
+  if (!sections) return null;
+
+  const sb1 = new Uint8Array(SECTOR_DATA * 4);
+  for (let i = 0; i < 4; i++) sb1.set(sections[1 + i], i * SECTOR_DATA);
+  const party: Mon[] = [];
+  const count = Math.min(new DataView(sb1.buffer).getUint32(SB1_PARTY_COUNT, true), 6);
+  for (let i = 0; i < count; i++) {
+    const mon = readMon(sb1, SB1_PARTY + i * PARTY_MON_SIZE);
+    if (mon) party.push(mon);
+  }
+
+  // El PC ocupa los sectores 5 a 13, pegados: 4 bytes y después 14 cajas de 30 Pokémon.
+  const pc = new Uint8Array(SECTOR_DATA * 9);
+  for (let i = 0; i < 9; i++) pc.set(sections[5 + i], i * SECTOR_DATA);
+  const boxed: Mon[] = [];
+  for (let i = 0; i < 14 * 30; i++) {
+    const mon = readBoxMon(pc, 4 + i * 80);
+    if (mon) boxed.push(mon);
+  }
+  return { party, boxed };
 }
 
 export function readSave(data: Uint8Array | null): SaveResult {

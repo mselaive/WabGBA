@@ -2,6 +2,7 @@
 //
 //   GET  /api/events?room=<id>  -> { events: [{ id, username, type, at, data, image, appeal }], lives }
 //   POST /api/events            -> anota una muerte: { game, mon, enemy, poisoned, badges, image }
+//                                  o una captura: { type: 'catch', game, mon, boxed, silent, image }
 //                                  (la sala sale de la ROM, no de lo que diga el cliente)
 import {
   EVENT_IN_ROOM,
@@ -16,7 +17,7 @@ import {
   roomOfGame,
   type Context,
 } from '../../../server/lib';
-import { deathCard } from '../../../server/discord';
+import { catchCard, deathCard } from '../../../server/discord';
 
 interface Row {
   id: number;
@@ -63,7 +64,7 @@ export async function onRequest({ request, env }: Context): Promise<Response> {
         'SELECT e.id AS id, u.username AS username, e.type AS type, e.created_at AS created_at, e.data AS data, ' +
           '(e.image IS NOT NULL) AS has_image, a.status AS appeal_status, a.reason AS appeal_reason ' +
           'FROM events e LEFT JOIN users u ON u.id = e.user_id LEFT JOIN appeals a ON a.event_id = e.id ' +
-          `WHERE ${EVENT_IN_ROOM} ORDER BY e.id DESC LIMIT 150`,
+          `WHERE ${EVENT_IN_ROOM} ORDER BY e.id DESC LIMIT 500`,
       )
       .bind(room.id)
       .all<Row>();
@@ -102,11 +103,37 @@ export async function onRequest({ request, env }: Context): Promise<Response> {
     const room = await roomOfGame(db, game);
     if (!room || !(await canEnter(db, user, room))) return json({ error: 'no-room' }, 404);
 
+    const nickname = String(mon.nickname ?? '').slice(0, 12);
+    /** Dónde se lo encontró, según el propio Pokémon. */
+    const met = int(mon.met, 0, 255);
+
+    if (body.type === 'catch') {
+      // `silent`: ya lo tenía de antes de que existieran estos avisos; se anota sin anunciar.
+      const silent = !!body.silent;
+      const caught = { game, species, level, nickname, met, boxed: !!body.boxed, silent };
+      const shot = typeof body.image === 'string' ? decodeBase64(body.image) : null;
+      const fresh = await addEvent(db, user.id, 'catch', `${game}:catch:${key}`, caught, shot);
+      if (fresh && !silent) {
+        const total = await db
+          .prepare(`SELECT COUNT(*) AS n FROM events e WHERE e.user_id = ? AND e.type = 'catch' AND ${EVENT_IN_ROOM}`)
+          .bind(user.id, room.id)
+          .first<{ n: number }>();
+        await announce(
+          db,
+          room,
+          catchCard({ username: user.username, species, level, nickname, met, boxed: caught.boxed, total: total?.n ?? 1 }),
+          shot,
+        );
+      }
+      return json({ ok: true, duplicate: !fresh });
+    }
+
     const data = {
       game,
       species,
       level,
-      nickname: String(mon.nickname ?? '').slice(0, 12),
+      nickname,
+      met,
       enemy:
         enemy && int(enemy.species, 1, 411) && int(enemy.level, 1, 100)
           ? { species: int(enemy.species, 1, 411), level: int(enemy.level, 1, 100), wild: !!enemy.wild }
@@ -127,7 +154,7 @@ export async function onRequest({ request, env }: Context): Promise<Response> {
     await announce(
       db,
       room,
-      deathCard({ username: user.username, species, level, nickname: data.nickname, enemy: data.enemy, poisoned: data.poisoned, left, lives: room.lives }),
+      deathCard({ username: user.username, species, level, nickname: data.nickname, enemy: data.enemy, poisoned: data.poisoned, met, left, lives: room.lives }),
       image,
     );
     return json({ ok: true, left });

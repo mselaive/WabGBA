@@ -15,6 +15,7 @@ import { isSpecies } from './species';
 const EWRAM_OFFSET = 0x21000;
 const EWRAM_SIZE = 0x40000;
 const MON_SIZE = 100;
+const BOX_MON_SIZE = 80;
 const PARTY_BYTES = MON_SIZE * 6;
 
 export interface Mon {
@@ -27,6 +28,10 @@ export interface Mon {
   maxHp: number;
   otId: number;
   poisoned: boolean;
+  /** Dónde se lo encontró (número de lugar del juego) y a qué nivel. */
+  met: number;
+  metLevel: number;
+  egg: boolean;
 }
 
 export interface Snapshot {
@@ -70,6 +75,8 @@ const u32 = (ram: Uint8Array, o: number) => (ram[o] | (ram[o + 1] << 8) | (ram[o
 
 /** En qué posición (0-3) queda el bloque "crecimiento" (donde va la especie) según la personalidad. */
 const GROWTH_SLOT = [0, 0, 0, 0, 0, 0, 1, 1, 2, 3, 2, 3, 1, 1, 2, 3, 2, 3, 1, 1, 2, 3, 2, 3];
+/** Lo mismo para el bloque "varios": lugar y nivel de encuentro, y si es un huevo. */
+const MISC_SLOT = [3, 2, 3, 2, 1, 1, 3, 2, 3, 2, 1, 1, 3, 2, 3, 2, 1, 1, 0, 0, 0, 0, 0, 0];
 
 function decodeText(ram: Uint8Array, o: number, length: number): string {
   let out = '';
@@ -94,12 +101,24 @@ function decodeText(ram: Uint8Array, o: number, length: number): string {
 /** Lee el Pokémon que hay en `o`, o null si ahí no hay uno válido. */
 export function readMon(ram: Uint8Array, o: number): Mon | null {
   if (o < 0 || o + MON_SIZE > ram.length) return null;
-  const language = ram[o + 18];
   const level = ram[o + 84];
-  if (language < 1 || language > 7 || level < 1 || level > 100) return null;
+  if (level < 1 || level > 100) return null;
   const hp = u16(ram, o + 86);
   const maxHp = u16(ram, o + 88);
   if (maxHp < 1 || maxHp > 999 || hp > maxHp) return null;
+  const mon = readBoxMon(ram, o);
+  if (!mon) return null;
+  return { ...mon, level, hp, maxHp, poisoned: (u32(ram, o + 80) & 0x88) !== 0 };
+}
+
+/**
+ * Lee un Pokémon guardado en el PC: los primeros 80 bytes, sin nivel ni PS (ahí se usa el
+ * nivel al que se lo encontró).
+ */
+export function readBoxMon(ram: Uint8Array, o: number): Mon | null {
+  if (o < 0 || o + BOX_MON_SIZE > ram.length) return null;
+  const language = ram[o + 18];
+  if (language < 1 || language > 7) return null;
 
   const personality = u32(ram, o);
   const otId = u32(ram, o + 4);
@@ -120,16 +139,20 @@ export function readMon(ram: Uint8Array, o: number): Mon | null {
   const species = words[GROWTH_SLOT[personality % 24] * 3] & 0xffff;
   if (!isSpecies(species)) return null;
 
-  const status = u32(ram, o + 80);
+  const misc = MISC_SLOT[personality % 24] * 3;
+  const metLevel = (words[misc] >>> 16) & 0x7f;
   return {
     key: personality.toString(16).padStart(8, '0') + otId.toString(16).padStart(8, '0'),
     species,
     nickname: decodeText(ram, o + 8, 10),
-    level,
-    hp,
-    maxHp,
+    level: metLevel,
+    hp: 0,
+    maxHp: 0,
     otId,
-    poisoned: (status & 0x88) !== 0,
+    poisoned: false,
+    met: (words[misc] >>> 8) & 0xff,
+    metLevel,
+    egg: ((words[misc + 1] >>> 30) & 1) === 1,
   };
 }
 

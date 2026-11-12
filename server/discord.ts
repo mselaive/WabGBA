@@ -1,6 +1,7 @@
 // Los avisos que van al canal de Discord de una sala: tarjetas (embeds) con color, miniatura
 // del Pokémon, datos en columnas y una frase al azar para que no salga siempre lo mismo.
 import { BADGES } from '../src/achievements';
+import { isCave, placeName } from '../src/places';
 import { speciesName } from '../src/species';
 
 export interface Card {
@@ -42,6 +43,7 @@ const BLUE = 0x3a86ff;
 const PURPLE = 0x8338ec;
 const GREEN = 0x2a9d8f;
 const GRAY = 0x8d99ae;
+const CATCH = 0xff6b35;
 
 const pick = <T>(list: T[]): T => list[Math.floor(Math.random() * list.length)];
 
@@ -130,6 +132,8 @@ export interface Death {
   nickname: string;
   enemy: { species: number | null; level: number | null; wild: boolean } | null;
   poisoned: boolean;
+  /** Dónde lo había encontrado. */
+  met?: number | null;
   left: number;
   lives: number;
 }
@@ -157,6 +161,8 @@ export function deathCard(d: Death): Card {
   ];
   if (foe) fields.push({ name: 'Verdugo', value: `${foe.name}${foe.wild ? ' salvaje' : ''} nv ${foe.level}`, inline: true });
   else if (d.poisoned) fields.push({ name: 'Verdugo', value: 'El veneno', inline: true });
+  const origin = placeName(d.met);
+  if (origin) fields.push({ name: 'Venía de', value: origin.charAt(0).toUpperCase() + origin.slice(1), inline: true });
   fields.push({ name: d.left > 0 ? 'Vidas' : 'Sin vidas', value: hearts(d.left, d.lives), inline: false });
 
   return {
@@ -170,6 +176,84 @@ export function deathCard(d: Death): Card {
     quote,
     fields,
     thumbnail: sprite(d.species),
+  };
+}
+
+const CATCH_ANY = [
+  'Bienvenido al equipo. Suerte, la vas a necesitar.',
+  'Carne fresca.',
+  'Otro valiente que no sabe dónde se metió.',
+  'Que le dure más que al anterior.',
+  'No te encariñes.',
+  'Firmó contrato sin leer la letra chica.',
+  'Un integrante más. Una posible baja más.',
+  'Hazte con todos.',
+  'La Poké Ball hizo clic. Qué alivio.',
+  'A ver cuánto dura.',
+  'El profesor Oak aprueba esta captura.',
+  'Lo que salió, salió. Así es el randomlocke.',
+];
+const CATCH_CAVE = [
+  'Lo sacaron de una cueva oscura. Seguro era un Zubat… ah, no, randomlocke.',
+  'Salió de la oscuridad directo a la Poké Ball.',
+  'Lo encontró a ciegas, sin Destello.',
+];
+const CATCH_BOXED = [
+  'Equipo lleno: directo al PC, a esperar su turno.',
+  'Al banco de suplentes.',
+  'Guardado en la caja, por si las moscas. Y va a haber moscas.',
+];
+const CATCH_STARTER = [
+  'Así empieza todo.',
+  'El primero de muchos. Ojalá no el primero en caer.',
+  'Arranca la aventura. Que alguien anote cuánto dura.',
+];
+const CATCH_BABY = ['Chiquito pero cumplidor. Esperemos.', 'Nivel bajo, sueños altos.'];
+const CATCH_BIG = ['Viene crecidito.', 'Este ya viene entrenado. Menos trabajo.'];
+
+export interface Catch {
+  username: string;
+  species: number;
+  level: number;
+  nickname: string;
+  met: number | null;
+  /** Fue directo al PC porque el equipo estaba lleno. */
+  boxed: boolean;
+  /** Cuántos lleva esta cuenta en la sala, contando este. */
+  total: number;
+}
+
+export function catchCard(c: Catch): Card {
+  const name = speciesName(c.species);
+  const named = c.nickname && c.nickname.toLowerCase() !== name.toLowerCase();
+  const who = named ? `**${plain(c.nickname)}** (${name})` : `un **${name}**`;
+  const place = placeName(c.met);
+  const starter = c.total === 1 && c.met === 88;
+  const trade = c.met === 254;
+
+  let special: string[] = [];
+  if (starter) special = CATCH_STARTER;
+  else if (c.boxed) special = CATCH_BOXED;
+  else if (isCave(c.met)) special = CATCH_CAVE;
+  else if (c.level <= 4) special = CATCH_BABY;
+  else if (c.level >= 40) special = CATCH_BIG;
+  const quote = special.length && Math.random() < 0.6 ? pick(special) : pick(CATCH_ANY);
+
+  const where = !place ? '' : c.met === 254 || c.met === 255 ? ` en ${place}` : ` en **${place}**`;
+  const fields = [
+    { name: 'Entrenador', value: c.username, inline: true },
+    { name: 'Pokémon', value: `${name} nv ${c.level}`, inline: true },
+  ];
+  if (place) fields.push({ name: 'Lugar', value: place.charAt(0).toUpperCase() + place.slice(1), inline: true });
+  fields.push({ name: 'Capturas', value: `Lleva **${c.total}** en esta partida${c.boxed ? ' · este fue al PC' : ''}`, inline: false });
+
+  return {
+    color: CATCH,
+    title: starter ? `🌱 ${c.username} eligió su inicial` : trade ? `🔁 ${c.username} recibió un ${name}` : `🔴 ${c.username} atrapó un ${name}`,
+    description: starter ? `Empieza el viaje con ${who}.` : trade ? `Llegó ${who} por intercambio.` : `Se sumó ${who}${where}.`,
+    quote,
+    fields,
+    thumbnail: sprite(c.species),
   };
 }
 

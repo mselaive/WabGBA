@@ -318,13 +318,27 @@ export interface DeathData {
   poisoned: boolean;
   /** Medallas que tenía al momento de la baja. */
   badges: number;
+  /** Dónde lo había encontrado (número de lugar del juego). */
+  met?: number | null;
+}
+
+export interface CatchData {
+  game: string;
+  species: number;
+  level: number;
+  nickname: string;
+  met: number | null;
+  /** Fue directo al PC. */
+  boxed: boolean;
+  /** Ya lo tenía de antes de que existieran estos avisos. */
+  silent: boolean;
 }
 
 export interface GameEvent {
   id: number;
   /** null: lo anota el sitio (por ejemplo, un torneo). */
   username: string | null;
-  type: 'death' | 'badge' | 'champion' | 'tournament';
+  type: 'death' | 'catch' | 'badge' | 'champion' | 'tournament';
   at: number;
   data: Record<string, unknown>;
   image: boolean;
@@ -340,7 +354,7 @@ export async function events(): Promise<{ events: GameEvent[]; lives: number }> 
 /** Anota una baja. `image`: PNG de la pantalla en ese momento. */
 export async function reportDeath(death: {
   game: string;
-  mon: { key: string; species: number; level: number; nickname: string };
+  mon: { key: string; species: number; level: number; nickname: string; met?: number };
   enemy: DeathData['enemy'];
   poisoned: boolean;
   badges: number;
@@ -359,6 +373,30 @@ export async function reportDeath(death: {
       body: JSON.stringify({ ...death, image }),
     }),
   );
+}
+
+const base64 = (bytes: Uint8Array) => {
+  let bin = '';
+  for (const b of bytes) bin += String.fromCharCode(b);
+  return btoa(bin);
+};
+
+/** Anota una captura. Devuelve si era nueva para el servidor. */
+export async function reportCatch(c: {
+  game: string;
+  mon: { key: string; species: number; level: number; nickname: string; met: number };
+  boxed: boolean;
+  silent: boolean;
+  image: Uint8Array | null;
+}): Promise<boolean> {
+  const res = await okJson(
+    await call('events', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...c, type: 'catch', image: c.image ? base64(c.image) : null }),
+    }),
+  );
+  return !((await res.json()) as { duplicate?: boolean }).duplicate;
 }
 
 /** La captura de un evento, como dirección que se puede poner en un <img>. */
