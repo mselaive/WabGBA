@@ -185,6 +185,7 @@ async function submitLogin() {
     // Cada cuenta tiene su propia partida: lo que estuviera abierto se cierra.
     await stopGame();
     playersCache = null;
+    catalogLoaded = false;
     sfx('ok');
     hideLogin();
     toast(`¡Hola, ${session.username}!`);
@@ -199,6 +200,7 @@ async function logout() {
   await stopGame();
   await sync.signOut();
   playersCache = null;
+  catalogLoaded = false;
   renderHub();
   showLogin();
 }
@@ -217,17 +219,20 @@ function renderAccount() {
 
 let gameCode = '';
 
-async function romId(path: string, fallback: string): Promise<string> {
+async function romIdOf(rom: Uint8Array, fallback: string): Promise<string> {
   let code = fallback.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 19) || 'juego';
+  const header = String.fromCharCode(...rom.subarray(0xac, 0xb0));
+  if (/^[A-Z0-9]{4}$/.test(header)) code = header;
+  const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', new Uint8Array(rom)));
+  const print = [...digest.subarray(0, 4)].map((b) => b.toString(16).padStart(2, '0')).join('');
+  return `${code}-${print}`;
+}
+
+async function romId(path: string, fallback: string): Promise<string> {
   try {
-    const rom = emu.FS.readFile(path).slice();
-    const header = String.fromCharCode(...rom.subarray(0xac, 0xb0));
-    if (/^[A-Z0-9]{4}$/.test(header)) code = header;
-    const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', rom));
-    const print = [...digest.subarray(0, 4)].map((b) => b.toString(16).padStart(2, '0')).join('');
-    return `${code}-${print}`;
+    return await romIdOf(emu.FS.readFile(path).slice(), fallback);
   } catch {
-    return code;
+    return fallback.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 19) || 'juego';
   }
 }
 
@@ -427,48 +432,220 @@ function renderHub() {
 
 // ----- Jugar -----
 
+// La biblioteca del sitio: las ROMs que subió la cuenta administradora. Los demás sólo
+// las descargan. Sin servidor de cuentas (`npm run dev`) cada uno carga las suyas.
+
+let catalog: sync.RomInfo[] = loadJson<sync.RomInfo[]>('wabgba.catalog', []);
+let catalogLoaded = false;
+let busy = false;
+
+function loadJson<T>(key: string, fallback: T): T {
+  try {
+    return (JSON.parse(localStorage.getItem(key) ?? 'null') as T | null) ?? fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+const isAdmin = () => !!sync.getSession()?.admin;
+/** Hay biblioteca compartida: el sitio tiene cuentas y hay una sesión abierta. */
+const shared = () => cloud && !!username();
+/** Quién puede cargar ROMs: la cuenta administradora (o cualquiera si no hay cuentas). */
+const canAdd = () => !cloud || isAdmin();
+
+/** Con qué archivo de este navegador se corresponde cada ROM de la biblioteca. */
+const fileMap = () => loadJson<Record<string, string>>('wabgba.files', {});
+
+function linkFile(id: string, name: string) {
+  localStorage.setItem('wabgba.files', JSON.stringify({ ...fileMap(), [id]: name }));
+}
+
+function fileFor(rom: sync.RomInfo): string | null {
+  const names = romNames();
+  const linked = fileMap()[rom.id];
+  if (linked && names.includes(linked)) return linked;
+  return names.includes(`${rom.id}.gba`) ? `${rom.id}.gba` : null;
+}
+
+/** Nombre para mostrar: el título de la biblioteca si la ROM viene de ahí. */
+function titleOf(name: string): string {
+  return catalog.find((r) => fileFor(r) === name)?.title ?? stem(name);
+}
+
+/** Un fallo hablando con el servidor: si venció la sesión, a entrar de nuevo. */
+function onCloudError(e: unknown) {
+  if (e instanceof sync.SyncError && e.kind === 'auth') {
+    sync.clearSession();
+    showLogin(sync.describe(e));
+  } else fail(sync.describe(e));
+}
+
+async function loadCatalog() {
+  if (!shared()) return;
+  try {
+    catalog = await sync.listRoms();
+    localStorage.setItem('wabgba.catalog', JSON.stringify(catalog));
+    catalogLoaded = true;
+    if (tab === 'play' && !hub.hidden && !busy) renderPlay();
+  } catch (e) {
+    catalogLoaded = true;
+    if (e instanceof sync.SyncError && e.kind === 'auth') onCloudError(e);
+  }
+}
+
+/** Baja una ROM de la biblioteca a este navegador y la arranca. */
+async function downloadAndStart(rom: sync.RomInfo) {
+  if (busy) return;
+  busy = true;
+  try {
+    say(`Descargando ${rom.title}…`);
+    const data = await sync.downloadRom(rom, (done, total) => {
+      $('textbox-text').textContent = `Descargando ${rom.title}… ${Math.round((done / total) * 100)}%`;
+    });
+    const name = `${rom.id}.gba`;
+    emu.FS.writeFile(`${emu.filePaths().gamePath}/${name}`, data);
+    linkFile(rom.id, name);
+    await persist();
+    // Pedirle al navegador que no borre estos datos si falta espacio.
+    void navigator.storage?.persist?.();
+    busy = false;
+    await startGame(name);
+  } catch (e) {
+    onCloudError(e);
+  } finally {
+    busy = false;
+  }
+}
+
+/** Sube a la biblioteca una ROM que ya está en este navegador (cuenta administradora). */
+async function publishRom(name: string) {
+  if (busy) return;
+  busy = true;
+  try {
+    const data = emu.FS.readFile(`${emu.filePaths().gamePath}/${name}`).slice();
+    const id = await romIdOf(data, stem(name));
+    if (!catalog.some((r) => r.id === id)) {
+      say(`Subiendo ${stem(name)} a la biblioteca…`);
+      await sync.uploadRom(id, stem(name), data, (done, total) => {
+        $('textbox-text').textContent = `Subiendo ${stem(name)} a la biblioteca… ${Math.round((done / total) * 100)}%`;
+      });
+    }
+    linkFile(id, name);
+    catalog = await sync.listRoms();
+    localStorage.setItem('wabgba.catalog', JSON.stringify(catalog));
+    sfx('ok');
+    busy = false;
+    renderPlay();
+    say(`¡Listo! ${stem(name)} ya está en la biblioteca: lo ven todos los participantes.`);
+  } catch (e) {
+    onCloudError(e);
+  } finally {
+    busy = false;
+  }
+}
+
+interface Cart {
+  title: string;
+  /** Archivo en este navegador, si ya está descargada. */
+  file: string | null;
+  /** Entrada de la biblioteca, si viene de ahí. */
+  rom: sync.RomInfo | null;
+}
+
+function carts(): Cart[] {
+  const names = romNames();
+  if (!shared()) return cloud ? [] : names.map((file) => ({ title: stem(file), file, rom: null }));
+  const list: Cart[] = catalog.map((rom) => ({ title: rom.title, file: fileFor(rom), rom }));
+  // La cuenta administradora ve también lo que tiene cargado y todavía no subió.
+  if (isAdmin()) {
+    const used = new Set(list.map((c) => c.file));
+    for (const file of names) if (!used.has(file)) list.push({ title: stem(file), file, rom: null });
+  }
+  return list;
+}
+
 function renderPlay() {
-  const roms = romNames();
+  if (shared() && !catalogLoaded) void loadCatalog();
+  const list = carts();
   const current = running ? activeRom() : null;
   const last = activeRom();
   $('btn-resume').hidden = !running;
   $('btn-export').hidden = !running;
 
-  romList.replaceChildren(
-    ...roms.map((name) => {
-      const li = el('li', 'cart-wrap');
-      const cart = el('button', 'cart' + (name === current ? ' playing' : ''));
-      cart.append(el('span', 'label', stem(name)));
-      if (name === current) cart.append(el('span', 'tag', 'JUGANDO'));
-      else if (name === last) cart.append(el('span', 'tag', 'ÚLTIMO'));
-      cart.onclick = () => (name === current ? closeHub() : void startGame(name));
-      const del = el('button', 'del', '✕');
-      del.title = 'Quitar la ROM (la partida se conserva)';
-      del.onclick = async () => {
-        if (!confirm(`¿Quitar "${name}" de este navegador? La partida guardada se conserva.`)) return;
-        if (name === current) await stopGame();
-        emu.FS.unlink(`${emu.filePaths().gamePath}/${name}`);
-        await persist();
-        renderHub();
-      };
-      li.append(cart, del);
-      return li;
-    }),
-    (() => {
-      const li = el('li');
-      const add = el('button', 'cart empty', '+ AGREGAR ROM');
-      add.onclick = () => fileRom.click();
-      li.append(add);
-      return li;
-    })(),
-  );
+  const nodes = list.map((c) => {
+    const li = el('li', 'cart-wrap');
+    const playing = !!c.file && c.file === current;
+    const cart = el('button', 'cart' + (playing ? ' playing' : '') + (c.file ? '' : ' remote'));
+    cart.append(el('span', 'label', c.title));
+    if (playing) cart.append(el('span', 'tag', 'JUGANDO'));
+    else if (!c.file) cart.append(el('span', 'tag get', '⬇ DESCARGAR'));
+    else if (shared() && !c.rom) cart.append(el('span', 'tag warn', 'SIN SUBIR'));
+    else if (c.file === last) cart.append(el('span', 'tag', 'ÚLTIMO'));
+    cart.onclick = () => {
+      if (playing) closeHub();
+      else if (c.file) void startGame(c.file);
+      else if (c.rom) void downloadAndStart(c.rom);
+    };
+    li.append(cart);
 
+    if (canAdd()) {
+      const del = el('button', 'del', '✕');
+      del.title = c.rom ? 'Quitar de la biblioteca (para todos)' : 'Quitar la ROM de este navegador';
+      del.onclick = async () => {
+        const where = c.rom ? 'de la biblioteca, para todos los participantes' : 'de este navegador';
+        if (!confirm(`¿Quitar "${c.title}" ${where}? Las partidas guardadas se conservan.`)) return;
+        try {
+          if (c.rom) {
+            await sync.deleteRom(c.rom.id);
+            catalog = catalog.filter((r) => r.id !== c.rom!.id);
+            localStorage.setItem('wabgba.catalog', JSON.stringify(catalog));
+          }
+          if (c.file) {
+            if (playing) await stopGame();
+            dropFile(`${emu.filePaths().gamePath}/${c.file}`);
+            await persist();
+          }
+          renderHub();
+        } catch (e) {
+          onCloudError(e);
+        }
+      };
+      li.append(del);
+    }
+    if (shared() && isAdmin() && c.file && !c.rom) {
+      const up = el('button', 'del up', '⬆');
+      up.title = 'Subir a la biblioteca para todos';
+      up.onclick = () => void publishRom(c.file!);
+      li.append(up);
+    }
+    return li;
+  });
+
+  if (canAdd()) {
+    const li = el('li');
+    const add = el('button', 'cart empty', '+ AGREGAR ROM');
+    add.onclick = () => fileRom.click();
+    li.append(add);
+    nodes.push(li);
+  }
+  romList.replaceChildren(...nodes);
+  $('play-note').textContent = !cloud
+    ? 'La ROM queda sólo en este navegador. La partida se guarda cuando guardás dentro del juego.'
+    : isAdmin()
+      ? 'Sos quien administra: las ROMs que subas a la biblioteca las ven todos los participantes.'
+      : 'Los juegos los elige quien administra el sitio. La partida se guarda cuando guardás dentro del juego y viaja con tu cuenta.';
+
+  if (busy) return;
   say(
     running
       ? 'El juego está en pausa. Volvé cuando quieras.'
-      : roms.length
-        ? 'Elegí un cartucho para seguir tu aventura.'
-        : 'Agregá tu ROM para empezar. Queda guardada sólo en este navegador.',
+      : cloud && !username()
+        ? 'Entrá con tu cuenta para ver los juegos.'
+        : list.length
+          ? 'Elegí un cartucho para seguir tu aventura.'
+          : canAdd()
+            ? 'Agregá una ROM para empezar.'
+            : 'Todavía no hay juegos. Quien administra el sitio tiene que subir uno.',
   );
 }
 
@@ -738,13 +915,16 @@ function renderPlayers() {
 // ---------- Juego ----------
 
 function addRom(file: File) {
+  if (!canAdd()) return;
   say('Guardando el cartucho en el navegador…');
   emu.uploadRom(file, async () => {
     await persist();
     // Pedirle al navegador que no borre estos datos si falta espacio.
     void navigator.storage?.persist?.();
     renderHub();
-    void startGame(file.name);
+    // Con cuentas, lo que carga quien administra va a la biblioteca de todos.
+    if (shared()) void publishRom(file.name);
+    else void startGame(file.name);
   });
 }
 
@@ -793,7 +973,7 @@ async function startGameInner(name: string) {
 
   const ok = emu.loadGame(romPath, savePathFor(name));
   if (!ok) {
-    fail(`No se pudo abrir "${name}". ¿Es una ROM válida?`);
+    fail(`No se pudo abrir "${titleOf(name)}". ¿Es una ROM válida?`);
     return;
   }
   running = true;
@@ -806,7 +986,7 @@ async function startGameInner(name: string) {
   applyVolume();
   sfx('ok');
   setHub(false);
-  document.title = `${stem(name)} · WabGBA`;
+  document.title = `${titleOf(name)} · WabGBA`;
   canvas.focus();
   // Ponerse al día con lo que la partida ya tenía hecho.
   setTimeout(() => checkAchievements(true), 1500);

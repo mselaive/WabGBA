@@ -619,8 +619,28 @@ body.touch #screen {
   padding: 3px 5px;
 }
 
+.cart .tag.get {
+  background: var(--yellow);
+}
+
+.cart .tag.warn {
+  background: #ffb26b;
+}
+
+/* Todavía no está en este navegador: se ve apagado hasta descargarlo. */
+.cart.remote {
+  filter: saturate(0.5) brightness(0.85);
+}
+
 .cart-wrap {
   position: relative;
+}
+
+.cart-wrap .del.up {
+  right: 22px;
+  background: var(--teal);
+  color: var(--ink);
+  border-color: var(--ink);
 }
 
 .cart-wrap .del {

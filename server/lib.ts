@@ -23,6 +23,8 @@ export interface Context {
 export interface User {
   id: number;
   username: string;
+  /** La primera cuenta creada administra el sitio: es la única que sube ROMs. */
+  admin: boolean;
 }
 
 export const json = (body: unknown, status = 200) =>
@@ -48,6 +50,15 @@ export async function database(env: Env): Promise<D1 | null> {
       env.DB.prepare(
         'CREATE TABLE IF NOT EXISTS game_saves (user_id INTEGER NOT NULL, name TEXT NOT NULL, saved_at INTEGER NOT NULL, ' +
           'data BLOB NOT NULL, progress TEXT, PRIMARY KEY (user_id, name))',
+      ),
+      env.DB.prepare(
+        'CREATE TABLE IF NOT EXISTS roms (id TEXT PRIMARY KEY, title TEXT NOT NULL, size INTEGER NOT NULL, ' +
+          'chunks INTEGER NOT NULL, ready INTEGER NOT NULL, created_at INTEGER NOT NULL)',
+      ),
+      // D1 no guarda valores de más de 2 MB: la ROM va partida en trozos.
+      env.DB.prepare(
+        'CREATE TABLE IF NOT EXISTS rom_chunks (rom_id TEXT NOT NULL, n INTEGER NOT NULL, data BLOB NOT NULL, ' +
+          'PRIMARY KEY (rom_id, n))',
       ),
     ]);
     ready = true;
@@ -101,13 +112,20 @@ export function bearer(request: Request): string {
 export async function currentUser(request: Request, db: D1): Promise<User | null> {
   const token = bearer(request);
   if (!token) return null;
-  return db
+  const row = await db
     .prepare(
-      'SELECT users.id AS id, users.username AS username FROM sessions ' +
+      'SELECT users.id AS id, users.username AS username, ' +
+        '(users.id = (SELECT MIN(id) FROM users)) AS admin FROM sessions ' +
         'JOIN users ON users.id = sessions.user_id WHERE sessions.token_hash = ?',
     )
     .bind(await sha256(token))
-    .first<User>();
+    .first<{ id: number; username: string; admin: number }>();
+  return row ? { id: row.id, username: row.username, admin: !!row.admin } : null;
+}
+
+export async function isAdmin(db: D1, userId: number): Promise<boolean> {
+  const first = await db.prepare('SELECT MIN(id) AS id FROM users').first<{ id: number }>();
+  return first?.id === userId;
 }
 
 export async function readBody(request: Request): Promise<Record<string, unknown>> {

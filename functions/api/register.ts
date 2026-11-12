@@ -1,5 +1,5 @@
 // POST /api/register { username, password, invite } -> { token, username }
-import { createSession, database, hashPassword, json, randomHex, readBody, safeEqual, sha256, type Context } from '../../server/lib';
+import { createSession, database, hashPassword, isAdmin, json, randomHex, readBody, safeEqual, sha256, type Context } from '../../server/lib';
 
 export async function onRequestPost({ request, env }: Context): Promise<Response> {
   const db = await database(env);
@@ -26,5 +26,5 @@ export async function onRequestPost({ request, env }: Context): Promise<Response
   const user = await db.prepare('SELECT id FROM users WHERE username = ?').bind(username).first<{ id: number }>();
   if (!user) return json({ error: 'server' }, 500);
 
-  return json({ token: await createSession(db, user.id), username });
+  return json({ token: await createSession(db, user.id), username, admin: await isAdmin(db, user.id) });
 }

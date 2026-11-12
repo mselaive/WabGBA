@@ -1,5 +1,5 @@
 // POST /api/login { username, password } -> { token, username }
-import { createSession, database, hashPassword, json, readBody, safeEqual, type Context } from '../../server/lib';
+import { createSession, database, hashPassword, isAdmin, json, readBody, safeEqual, type Context } from '../../server/lib';
 
 export async function onRequestPost({ request, env }: Context): Promise<Response> {
   const db = await database(env);
@@ -17,5 +17,5 @@ export async function onRequestPost({ request, env }: Context): Promise<Response
   const hash = await hashPassword(password, user?.salt ?? 'sin-usuario');
   if (!user || !safeEqual(hash, user.pass_hash)) return json({ error: 'bad-credentials' }, 401);
 
-  return json({ token: await createSession(db, user.id), username });
+  return json({ token: await createSession(db, user.id), username, admin: await isAdmin(db, user.id) });
 }

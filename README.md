@@ -4,8 +4,9 @@ Emulador de Game Boy Advance en el navegador, de uso personal. Corre sobre
 [mGBA](https://mgba.io) compilado a WebAssembly
 ([@thenick775/mgba-wasm](https://www.npmjs.com/package/@thenick775/mgba-wasm)).
 
-- **Tu ROM, tu navegador.** La ROM se elige desde el disco y queda guardada sólo en el
-  navegador (IndexedDB). El sitio desplegado no incluye ni sube ningún juego.
+- **Biblioteca del sitio.** Sólo la cuenta administradora (la primera que se crea) sube
+  ROMs; los demás participantes ven esos cartuchos y los descargan a su navegador, sin poder
+  cargar otros. Así todos juegan exactamente la misma ROM. El repo no incluye ningún juego.
 - **Se guarda como en la consola.** Lo único que cuenta es guardar dentro del juego: no hay
   estados, ni rebobinado, ni forma de cargar una partida vieja. Pensado para un randomlocke.
 - **Seguís donde lo dejaste.** Al cerrar la pestaña queda un punto de reanudación en ese
@@ -25,8 +26,8 @@ Emulador de Game Boy Advance en el navegador, de uso personal. Corre sobre
 - **Teclado y táctil.** Cruceta y botones en pantalla para el teléfono.
 
 La partida en la nube se identifica por el archivo de la ROM (código del juego más una
-huella del archivo). Para seguir la misma partida en dos dispositivos hay que cargar
-**exactamente la misma ROM** en los dos: dos randomizaciones distintas son partidas distintas.
+huella del archivo): dos randomizaciones distintas son juegos y partidas distintas. Las ROMs
+se guardan en D1 partidas en trozos de 1 MB (`functions/api/roms`).
 
 ## Controles
 
@@ -46,8 +47,8 @@ npm install
 npm run dev
 ```
 
-Abre en `http://localhost:5175`. Así no hay cuentas: se juega sin login y la partida queda
-sólo en el navegador.
+Abre en `http://localhost:5175`. Así no hay cuentas ni biblioteca: se juega sin login,
+cada uno carga su ROM y la partida queda sólo en el navegador.
 
 Para probar con cuentas y partida en la nube, todo en local:
 
@@ -77,6 +78,9 @@ El emulador usa hilos, así que la página tiene que servirse con las cabeceras
    como valor el código que le vas a pasar a quien quieras que pueda crearse una cuenta.
 5. **Deployments → Retry deployment**, para que tome los cambios.
 6. En el sitio: **Crear una cuenta**, con usuario, contraseña y el código de invitación.
+   **La primera cuenta que se crea es la administradora**: creá la tuya antes de pasarle el
+   código a nadie.
+7. Con esa cuenta: **+ AGREGAR ROM**. Se sube a la biblioteca y la ven todos.
 
 Sin `INVITE_CODE` nadie puede registrarse. Las contraseñas se guardan con hash (PBKDF2),
 nunca en texto.

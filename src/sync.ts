@@ -5,6 +5,8 @@
 export interface Session {
   token: string;
   username: string;
+  /** La cuenta administradora: la única que sube ROMs a la biblioteca. */
+  admin: boolean;
 }
 
 const SESSION = 'wabgba.session';
@@ -29,7 +31,9 @@ export type SyncErrorKind =
   | 'bad-credentials'
   | 'taken'
   | 'bad-invite'
-  | 'invalid';
+  | 'invalid'
+  | 'forbidden'
+  | 'too-big';
 
 export class SyncError extends Error {
   constructor(public kind: SyncErrorKind) {
@@ -48,6 +52,8 @@ export function describe(e: unknown): string {
     taken: 'Ese nombre de usuario ya existe.',
     'bad-invite': 'El código de invitación no es correcto.',
     invalid: 'Usuario de 3 a 20 letras o números, y contraseña de 6 o más.',
+    forbidden: 'Sólo la cuenta administradora puede hacer eso.',
+    'too-big': 'El archivo es demasiado grande.',
   }[kind];
 }
 
@@ -87,7 +93,12 @@ export async function check(): Promise<'in' | 'out' | 'none' | 'offline'> {
   }
   // Sin la API detrás responde el HTML de la página.
   if (!isJson(res)) return 'none';
-  if (res.ok) return 'in';
+  if (res.ok) {
+    const session = getSession();
+    const body = (await res.json()) as { admin?: boolean };
+    if (session) localStorage.setItem(SESSION, JSON.stringify({ ...session, admin: !!body.admin }));
+    return 'in';
+  }
   clearSession();
   return 'out';
 }
@@ -106,7 +117,7 @@ export async function signIn(
   if (!isJson(res)) throw new SyncError('not-configured');
   const body = (await res.json()) as Partial<Session> & { error?: SyncErrorKind };
   if (!res.ok || !body.token || !body.username) throw new SyncError(body.error ?? 'server');
-  const session = { token: body.token, username: body.username };
+  const session = { token: body.token, username: body.username, admin: !!body.admin };
   localStorage.setItem(SESSION, JSON.stringify(session));
   return session;
 }
@@ -118,6 +129,81 @@ export async function signOut() {
     /* sin conexión: igual se cierra acá */
   }
   clearSession();
+}
+
+// ---------- Biblioteca de ROMs ----------
+
+export interface RomInfo {
+  id: string;
+  title: string;
+  size: number;
+  chunks: number;
+}
+
+export const CHUNK_BYTES = 1024 * 1024;
+
+async function okJson(res: Response): Promise<Response> {
+  if (res.status === 401) throw new SyncError('auth');
+  if (res.status === 403) throw new SyncError('forbidden');
+  if (res.status === 413) throw new SyncError('too-big');
+  if (!res.ok || !isJson(res)) throw new SyncError(isJson(res) ? 'server' : 'not-configured');
+  return res;
+}
+
+export async function listRoms(): Promise<RomInfo[]> {
+  const res = await okJson(await call('roms'));
+  return ((await res.json()) as { roms: RomInfo[] }).roms;
+}
+
+/** Baja una ROM de la biblioteca, trozo por trozo. */
+export async function downloadRom(rom: RomInfo, onProgress: (done: number, total: number) => void): Promise<Uint8Array> {
+  const data = new Uint8Array(rom.size);
+  let offset = 0;
+  for (let n = 0; n < rom.chunks; n++) {
+    const res = await call(`roms/${encodeURIComponent(rom.id)}/${n}`);
+    if (res.status === 401) throw new SyncError('auth');
+    if (!res.ok || isJson(res)) throw new SyncError('server');
+    const chunk = new Uint8Array(await res.arrayBuffer());
+    if (offset + chunk.length > rom.size) throw new SyncError('server');
+    data.set(chunk, offset);
+    offset += chunk.length;
+    onProgress(n + 1, rom.chunks);
+  }
+  if (offset !== rom.size) throw new SyncError('server');
+  return data;
+}
+
+/** Sube una ROM a la biblioteca (sólo la cuenta administradora). */
+export async function uploadRom(
+  id: string,
+  title: string,
+  data: Uint8Array,
+  onProgress: (done: number, total: number) => void,
+): Promise<void> {
+  const chunks = Math.ceil(data.length / CHUNK_BYTES);
+  const path = `roms/${encodeURIComponent(id)}`;
+  await okJson(
+    await call(path, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title, size: data.length, chunks }),
+    }),
+  );
+  for (let n = 0; n < chunks; n++) {
+    await okJson(
+      await call(`${path}/${n}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/octet-stream' },
+        body: data.slice(n * CHUNK_BYTES, (n + 1) * CHUNK_BYTES),
+      }),
+    );
+    onProgress(n + 1, chunks);
+  }
+  await okJson(await call(path, { method: 'POST' }));
+}
+
+export async function deleteRom(id: string): Promise<void> {
+  await okJson(await call(`roms/${encodeURIComponent(id)}`, { method: 'DELETE' }));
 }
 
 // ---------- Participantes ----------
