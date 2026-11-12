@@ -1,4 +1,6 @@
 import mGBA, { type mGBAEmulator } from '@thenick775/mgba-wasm';
+import { ACHIEVEMENTS, evaluate, loadUnlocked, type Achievement } from './achievements';
+import { readSave } from './save';
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -67,7 +69,103 @@ function onGameSaved() {
   saveTimer = window.setTimeout(async () => {
     await persist();
     toast('Partida guardada');
+    checkAchievements(false);
   }, 600);
+}
+
+// ---------- Logros ----------
+
+const achvPanel = $('achievements');
+const achvPop = $('achv-pop');
+const popQueue: Achievement[] = [];
+let popBusy = false;
+
+const gameKey = () => (emu.saveName ? stem(baseName(emu.saveName)) : '');
+
+function showNextPop() {
+  const a = popQueue.shift();
+  if (!a) {
+    popBusy = false;
+    return;
+  }
+  popBusy = true;
+  achvPop.querySelector('.icon')!.textContent = a.icon;
+  achvPop.querySelector('b')!.textContent = a.title;
+  achvPop.classList.add('show');
+  setTimeout(() => {
+    achvPop.classList.remove('show');
+    setTimeout(showNextPop, 450);
+  }, 3500);
+}
+
+/** Lee la partida y desbloquea lo que corresponda. `quiet`: al abrir el juego, sin desfile de avisos. */
+function checkAchievements(quiet: boolean) {
+  if (!running) return;
+  const save = readSave(emu.getSave());
+  if (!save.ok) return;
+  const fresh = evaluate(gameKey(), save.progress);
+  if (!fresh.length) return;
+  if (quiet || fresh.length > 3) {
+    toast(fresh.length === 1 ? `🏆 ${fresh[0].title}` : `🏆 ${fresh.length} logros desbloqueados`);
+  } else {
+    popQueue.push(...fresh);
+    if (!popBusy) showNextPop();
+  }
+  if (!achvPanel.hidden) renderAchievements();
+}
+
+function renderAchievements() {
+  const save = readSave(emu.getSave());
+  const unlocked = loadUnlocked(gameKey());
+  const count = ACHIEVEMENTS.filter((a) => unlocked[a.id]).length;
+  $('achv-count').textContent = `${count} / ${ACHIEVEMENTS.length}`;
+
+  const summary = $('achv-summary');
+  if (save.ok) {
+    const p = save.progress;
+    summary.textContent =
+      `${p.name || 'Entrenador'} · ${p.hours}:${String(p.minutes).padStart(2, '0')} h · ` +
+      `${p.badgeCount} medallas · Pokédex ${p.owned}`;
+  } else if (save.reason === 'unsupported') {
+    summary.textContent = 'Por ahora los logros sólo funcionan con Pokémon Rojo Fuego y Verde Hoja.';
+  } else {
+    summary.textContent = 'Todavía no hay partida guardada. Guardá dentro del juego para empezar a sumar logros.';
+  }
+
+  $('achv-list').replaceChildren(
+    ...ACHIEVEMENTS.map((a) => {
+      const when = unlocked[a.id];
+      const li = document.createElement('li');
+      li.classList.toggle('done', !!when);
+      const icon = document.createElement('span');
+      icon.className = 'icon';
+      icon.textContent = a.icon;
+      const body = document.createElement('div');
+      body.className = 'body';
+      const title = document.createElement('b');
+      title.textContent = a.title;
+      const desc = document.createElement('small');
+      desc.textContent = a.desc;
+      body.append(title, desc);
+      const side = document.createElement('span');
+      side.className = 'side';
+      if (when) side.textContent = new Date(when).toLocaleDateString();
+      else if (a.progress && save.ok) {
+        const [cur, goal] = a.progress(save.progress);
+        side.textContent = `${Math.min(cur, goal).toLocaleString()} / ${goal.toLocaleString()}`;
+      }
+      li.append(icon, body, side);
+      return li;
+    }),
+  );
+}
+
+function toggleAchievements(open: boolean) {
+  if (open) {
+    checkAchievements(true);
+    renderAchievements();
+  }
+  achvPanel.hidden = !open;
 }
 
 // ---------- Biblioteca ----------
@@ -127,6 +225,8 @@ function startGame(name: string) {
   library.hidden = true;
   document.title = `${stem(name)} · WabGBA`;
   canvas.focus();
+  // Ponerse al día con lo que la partida ya tenía hecho.
+  setTimeout(() => checkAchievements(true), 1500);
 }
 
 async function openLibrary() {
@@ -340,6 +440,12 @@ function setupToolbar() {
     if (document.fullscreenElement) void document.exitFullscreen();
     else void $('player').requestFullscreen?.();
   };
+
+  $('btn-achievements').onclick = () => toggleAchievements(true);
+  $('btn-achv-close').onclick = () => toggleAchievements(false);
+  achvPanel.addEventListener('click', (e) => {
+    if (e.target === achvPanel) toggleAchievements(false);
+  });
 
   btnAdd.onclick = () => fileRom.click();
   fileRom.onchange = () => {

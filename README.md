@@ -12,6 +12,9 @@ Emulador de Game Boy Advance en el navegador, de uso personal. Corre sobre
 - **Estados** en tres ranuras, **exportar / importar** el `.sav` como respaldo o para
   pasarlo entre dispositivos, acelerar, pausa, silencio y pantalla completa.
 - **Teclado y táctil.** Cruceta y botones en pantalla para el teléfono.
+- **Logros** para Pokémon Rojo Fuego / Verde Hoja: medallas, Liga, Pokédex, equipo y más.
+  Se leen del `.sav` cada vez que guardás dentro del juego (`src/save.ts`) y quedan
+  anotados en el navegador. Para sumar uno nuevo, agregalo en `src/achievements.ts`.
 
 ## Controles
 
@@ -52,6 +55,5 @@ GitHub Pages no sirve tal cual, porque no deja configurar cabeceras.
 
 ## Pendiente
 
-- Logros (medallas, Pokédex, Liga) leyendo la partida guardada.
 - Sincronizar la partida entre dispositivos.
 - Instalable como app (PWA).

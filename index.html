@@ -30,6 +30,7 @@
           <button id="btn-export" title="Descargar la partida (.sav)">⬇ Partida</button>
           <button id="btn-import" title="Reemplazar la partida con un .sav">⬆ Partida</button>
         </span>
+        <button id="btn-achievements" title="Logros de esta partida">🏆 Logros</button>
         <button id="btn-mute" title="Silenciar (M)">🔊</button>
         <button id="btn-touch" title="Mostrar u ocultar los controles táctiles">🎮</button>
         <button id="btn-full" title="Pantalla completa">⛶</button>
@@ -72,6 +73,23 @@
           </table>
         </details>
       </div>
+    </div>
+
+    <div id="achievements" hidden>
+      <div class="card">
+        <div class="card-head">
+          <h2>🏆 Logros <span id="achv-count"></span></h2>
+          <button id="btn-achv-close" title="Cerrar">✕</button>
+        </div>
+        <p id="achv-summary"></p>
+        <ul id="achv-list"></ul>
+        <p class="hint">Los logros se revisan cada vez que guardás dentro del juego.</p>
+      </div>
+    </div>
+
+    <div id="achv-pop">
+      <span class="icon"></span>
+      <div><small>Logro desbloqueado</small><b></b></div>
     </div>
 
     <input id="file-rom" type="file" accept=".gba,.gbc,.gb" hidden />
