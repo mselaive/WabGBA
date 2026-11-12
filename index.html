@@ -14,24 +14,11 @@
       </div>
 
       <div id="toolbar">
-        <button id="btn-library" title="Volver a la biblioteca">☰ Juegos</button>
+        <button id="btn-library" title="Juegos y cuenta">☰ Juegos</button>
         <button id="btn-pause" title="Pausar o seguir (P)">⏸ Pausa</button>
         <button id="btn-speed" title="Velocidad (mantener Espacio para acelerar)">x1</button>
-        <span class="group">
-          <select id="slot" title="Ranura de estado">
-            <option value="1">Ranura 1</option>
-            <option value="2">Ranura 2</option>
-            <option value="3">Ranura 3</option>
-          </select>
-          <button id="btn-save-state" title="Guardar estado (F2)">Guardar estado</button>
-          <button id="btn-load-state" title="Cargar estado (F4)">Cargar estado</button>
-        </span>
-        <span class="group">
-          <button id="btn-export" title="Descargar la partida (.sav)">⬇ Partida</button>
-          <button id="btn-import" title="Reemplazar la partida con un .sav">⬆ Partida</button>
-        </span>
         <button id="btn-achievements" title="Logros de esta partida">🏆 Logros</button>
-        <button id="btn-sync" title="Sincronizar la partida entre dispositivos">☁</button>
+        <span class="spacer"></span>
         <button id="btn-mute" title="Silenciar (M)">🔊</button>
         <button id="btn-touch" title="Mostrar u ocultar los controles táctiles">🎮</button>
         <button id="btn-full" title="Pantalla completa">⛶</button>
@@ -52,17 +39,21 @@
       </div>
     </div>
 
-    <div id="library">
+    <div id="library" class="overlay">
       <div class="card">
         <h1>WabGBA</h1>
         <p id="status">Cargando el emulador…</p>
         <ul id="roms"></ul>
         <button id="btn-add" class="primary" disabled>Agregar ROM (.gba)</button>
-        <button id="btn-sync-library">☁ Perfil y sincronización</button>
+        <div id="account" hidden>
+          <span id="account-name"></span>
+          <button id="btn-account">Entrar</button>
+        </div>
         <p class="hint">
-          La ROM se guarda sólo en este navegador y nunca se sube. La partida también, salvo que
-          actives la sincronización.
+          La ROM queda sólo en este navegador y nunca se sube. La partida se guarda cuando guardás
+          dentro del juego; con una cuenta, además viaja a tus otros dispositivos.
         </p>
+        <button id="btn-export" class="link" hidden>Descargar una copia de la partida</button>
         <details>
           <summary>Controles de teclado</summary>
           <table>
@@ -72,13 +63,12 @@
             <tr><td>Enter / Retroceso</td><td>Start / Select</td></tr>
             <tr><td>Espacio (mantener)</td><td>Acelerar</td></tr>
             <tr><td>P · M</td><td>Pausa · Silencio</td></tr>
-            <tr><td>F2 · F4</td><td>Guardar · cargar estado</td></tr>
           </table>
         </details>
       </div>
     </div>
 
-    <div id="achievements" hidden>
+    <div id="achievements" class="overlay" hidden>
       <div class="card">
         <div class="card-head">
           <h2>🏆 Logros <span id="achv-count"></span></h2>
@@ -90,30 +80,20 @@
       </div>
     </div>
 
-    <div id="sync" hidden>
-      <div class="card">
-        <div class="card-head">
-          <h2>☁ Sincronización</h2>
-          <button id="btn-sync-close" title="Cerrar">✕</button>
+    <div id="login" class="overlay" hidden>
+      <form id="login-form" class="card">
+        <h1>WabGBA</h1>
+        <p class="sub">Entrá con tu cuenta para seguir tu partida en cualquier dispositivo.</p>
+        <input id="login-user" type="text" placeholder="Usuario" autocomplete="username" autocapitalize="none" spellcheck="false" maxlength="20" required />
+        <input id="login-pass" type="password" placeholder="Contraseña" autocomplete="current-password" required />
+        <input id="login-invite" type="text" placeholder="Código de invitación" autocomplete="off" autocapitalize="none" spellcheck="false" hidden />
+        <p id="login-error"></p>
+        <button id="login-submit" class="primary" type="submit">Entrar</button>
+        <div class="links">
+          <button id="login-switch" class="link" type="button">Crear una cuenta</button>
+          <button id="login-skip" class="link" type="button">Seguir sin cuenta</button>
         </div>
-        <p class="hint">
-          Con la misma clave en tu PC y en tu teléfono, la partida se sube sola cada vez que guardás
-          dentro del juego y se baja al abrirlo en el otro dispositivo. Los estados no viajan.
-          Si juegan varias personas, cada una pone su perfil y tiene su propia partida.
-        </p>
-        <div class="row">
-          <input id="sync-profile" type="text" placeholder="Perfil (ej. mati) — una partida por perfil" autocomplete="off" maxlength="20" />
-        </div>
-        <div class="row">
-          <input id="sync-key" type="password" placeholder="Clave de sincronización" autocomplete="off" />
-          <button id="btn-sync-save">Guardar</button>
-        </div>
-        <p id="sync-status"></p>
-        <div class="row">
-          <button id="btn-sync-push">⬆ Subir la de acá</button>
-          <button id="btn-sync-pull">⬇ Traer la de la nube</button>
-        </div>
-      </div>
+      </form>
     </div>
 
     <div id="achv-pop">
@@ -122,7 +102,6 @@
     </div>
 
     <input id="file-rom" type="file" accept=".gba,.gbc,.gb" hidden />
-    <input id="file-sav" type="file" accept=".sav" hidden />
     <div id="toast"></div>
 
     <script type="module" src="/src/main.ts"></script>

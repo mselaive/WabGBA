@@ -332,44 +332,7 @@ td:first-child {
 
 /* ---------- Logros ---------- */
 
-#sync .row {
-  display: flex;
-  gap: 8px;
-  margin: 10px 0;
-}
-
-#sync .row > * {
-  flex: 1;
-}
-
-#sync .row #btn-sync-save {
-  flex: none;
-}
-
-#sync input {
-  font: inherit;
-  color: var(--text);
-  background: var(--bg);
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  padding: 8px 10px;
-  min-width: 0;
-  -webkit-user-select: text;
-  user-select: text;
-}
-
-#sync-status {
-  color: var(--dim);
-  margin: 10px 0;
-}
-
-#btn-sync-library {
-  width: 100%;
-  margin-top: 8px;
-}
-
-#achievements,
-#sync {
+#achievements {
   position: fixed;
   inset: 0;
   display: flex;
@@ -380,8 +343,7 @@ td:first-child {
   z-index: 10;
 }
 
-#achievements[hidden],
-#sync[hidden] {
+#achievements[hidden] {
   display: none;
 }
 
@@ -517,4 +479,102 @@ td:first-child {
 #toast.show {
   opacity: 1;
   transform: translate(-50%, 0);
+}
+
+/* ---------- Cuenta ---------- */
+
+#toolbar .spacer {
+  flex: 1;
+}
+
+#account {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+  color: var(--dim);
+}
+
+#account[hidden] {
+  display: none;
+}
+
+button.link {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--dim);
+  text-decoration: underline;
+  font-size: 13px;
+}
+
+button.link:hover {
+  color: var(--text);
+}
+
+button.link[hidden] {
+  display: none;
+}
+
+#login {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: var(--bg);
+  z-index: 15;
+}
+
+#login[hidden] {
+  display: none;
+}
+
+#login .card {
+  display: grid;
+  gap: 10px;
+  width: min(340px, 100%);
+}
+
+#login .sub {
+  margin: 0 0 6px;
+  color: var(--dim);
+}
+
+#login input {
+  font: inherit;
+  font-size: 16px;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px 12px;
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+#login input[hidden] {
+  display: none;
+}
+
+#login input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+#login-error {
+  margin: 0;
+  min-height: 1.4em;
+  color: #ff8a8a;
+  font-size: 13px;
+}
+
+#login .links {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 4px;
 }

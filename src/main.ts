@@ -11,12 +11,10 @@ const statusEl = $('status');
 const romList = $('roms');
 const btnAdd = $<HTMLButtonElement>('btn-add');
 const fileRom = $<HTMLInputElement>('file-rom');
-const fileSav = $<HTMLInputElement>('file-sav');
 const toastEl = $('toast');
 const btnPause = $('btn-pause');
 const btnSpeed = $('btn-speed');
 const btnMute = $('btn-mute');
-const slotSel = $<HTMLSelectElement>('slot');
 
 let emu: mGBAEmulator;
 let running = false;
@@ -75,34 +73,110 @@ function onGameSaved() {
   }, 600);
 }
 
-// ---------- Sincronización en la nube ----------
-// La partida se identifica por el código del juego en la cabecera de la ROM (BPRS, BPRE…),
-// así no importa cómo se llame el archivo en cada dispositivo.
+// ---------- Cuenta ----------
 
-const syncPanel = $('sync');
-const syncStatus = $('sync-status');
-const syncKeyInput = $<HTMLInputElement>('sync-key');
-const syncProfileInput = $<HTMLInputElement>('sync-profile');
-let gameCode = '';
+const loginPanel = $('login');
+const loginError = $('login-error');
+const loginUser = $<HTMLInputElement>('login-user');
+const loginPass = $<HTMLInputElement>('login-pass');
+const loginInvite = $<HTMLInputElement>('login-invite');
+const loginSubmit = $<HTMLButtonElement>('login-submit');
+/** El sitio tiene servidor de cuentas (en `npm run dev` no). */
+let cloud = false;
+let registerMode = false;
 
-function romCode(path: string, fallback: string): string {
-  try {
-    const stream = emu.FS.open(path, 'r');
-    const buf = new Uint8Array(4);
-    emu.FS.read(stream, buf, 0, 4, 0xac);
-    emu.FS.close(stream);
-    const code = String.fromCharCode(...buf);
-    if (/^[A-Z0-9]{4}$/.test(code)) return code;
-  } catch {
-    /* ROM ilegible: usar el nombre */
-  }
-  return fallback.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 19) || 'juego';
+const username = () => sync.getSession()?.username ?? '';
+
+function setRegisterMode(on: boolean) {
+  registerMode = on;
+  loginInvite.hidden = !on;
+  loginSubmit.textContent = on ? 'Crear cuenta' : 'Entrar';
+  $('login-switch').textContent = on ? 'Ya tengo cuenta' : 'Crear una cuenta';
+  loginPass.autocomplete = on ? 'new-password' : 'current-password';
 }
 
-/** Dónde vive el .sav de una ROM para el perfil activo. */
+function showLogin(message = '') {
+  loginError.textContent = message;
+  setRegisterMode(false);
+  loginPanel.hidden = false;
+  // Que el emulador no se coma las teclas mientras se escribe.
+  emu.toggleInput(false);
+}
+
+function hideLogin() {
+  loginPanel.hidden = true;
+  emu.toggleInput(true);
+  renderLibrary();
+}
+
+/** Cierra el juego en curso dejando todo guardado en el dispositivo. */
+async function stopGame() {
+  if (!running) return;
+  emu.forceAutoSaveState();
+  emu.quitGame();
+  running = false;
+  await persist();
+  library.hidden = false;
+}
+
+async function submitLogin() {
+  loginSubmit.disabled = true;
+  loginError.textContent = '';
+  try {
+    const mode = registerMode ? 'register' : 'login';
+    const session = await sync.signIn(mode, loginUser.value.trim(), loginPass.value, loginInvite.value);
+    loginPass.value = '';
+    loginInvite.value = '';
+    // Cada cuenta tiene su propia partida: lo que estuviera abierto se cierra.
+    await stopGame();
+    hideLogin();
+    toast(`Hola, ${session.username}`);
+  } catch (e) {
+    loginError.textContent = sync.describe(e);
+  } finally {
+    loginSubmit.disabled = false;
+  }
+}
+
+async function logout() {
+  await stopGame();
+  await sync.signOut();
+  renderLibrary();
+  showLogin();
+}
+
+function renderAccount() {
+  const session = sync.getSession();
+  $('account').hidden = !cloud;
+  $('account-name').textContent = session ? `👤 ${session.username}` : 'Sin cuenta: la partida queda sólo acá';
+  $('btn-account').textContent = session ? 'Salir' : 'Entrar';
+}
+
+// ---------- Partida en la nube ----------
+// La partida se identifica por el código del juego más una huella del archivo de la ROM:
+// no importa cómo se llame el archivo en cada dispositivo, pero tiene que ser la misma ROM
+// (dos randomizaciones distintas son juegos distintos).
+
+let gameCode = '';
+
+async function romId(path: string, fallback: string): Promise<string> {
+  let code = fallback.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 19) || 'juego';
+  try {
+    const rom = emu.FS.readFile(path).slice();
+    const header = String.fromCharCode(...rom.subarray(0xac, 0xb0));
+    if (/^[A-Z0-9]{4}$/.test(header)) code = header;
+    const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', rom));
+    const print = [...digest.subarray(0, 4)].map((b) => b.toString(16).padStart(2, '0')).join('');
+    return `${code}-${print}`;
+  } catch {
+    return code;
+  }
+}
+
+/** Dónde vive el .sav de una ROM para la cuenta activa. */
 function savePathFor(romName: string): string {
-  const profile = sync.getProfile();
-  return `${emu.filePaths().savePath}/${stem(romName)}${profile ? '.' + profile : ''}.sav`;
+  const user = username();
+  return `${emu.filePaths().savePath}/${stem(romName)}${user ? '.' + user : ''}.sav`;
 }
 
 /** Un .sav recién creado viene lleno de 0xFF: eso no cuenta como partida. */
@@ -126,8 +200,7 @@ function dropFile(path: string) {
 
 /** Antes de arrancar el juego: si la nube tiene una partida más nueva, traerla. */
 async function syncBeforeLoad(romName: string): Promise<{ forceUpload: boolean }> {
-  if (!sync.getKey()) return { forceUpload: false };
-  const paths = emu.filePaths();
+  if (!username()) return { forceUpload: false };
   const savePath = savePathFor(romName);
   const st = sync.getState(gameCode);
   try {
@@ -138,8 +211,8 @@ async function syncBeforeLoad(romName: string): Promise<{ forceUpload: boolean }
     if (
       localChanged &&
       !confirm(
-        'La nube tiene una partida distinta a la de este dispositivo, y acá hay progreso sin subir.\n\n' +
-          'Aceptar: usar la de la nube (se pierde lo de este dispositivo).\n' +
+        'Tu cuenta tiene una partida distinta a la de este dispositivo, y acá hay progreso sin subir.\n\n' +
+          'Aceptar: usar la de tu cuenta (se pierde lo de este dispositivo).\n' +
           'Cancelar: quedarse con la de este dispositivo y subirla.',
       )
     ) {
@@ -149,12 +222,13 @@ async function syncBeforeLoad(romName: string): Promise<{ forceUpload: boolean }
     const got = await sync.download(gameCode);
     if (!got) return { forceUpload: false };
     emu.FS.writeFile(savePath, got.data);
-    // El estado automático trae la partida vieja adentro: descartarlo.
-    dropFile(`${paths.autosave}/${stem(romName)}_auto.ss`);
+    // El punto de reanudación trae la partida vieja adentro: descartarlo.
+    dropFile(`${emu.filePaths().autosave}/${stem(romName)}_auto.ss`);
     sync.setState(gameCode, { base: got.savedAt, dirty: false });
     await persist();
-    toast('☁ Partida traída de la nube');
+    toast('☁ Partida traída de tu cuenta');
   } catch (e) {
+    if (e instanceof sync.SyncError && e.kind === 'auth') throw e;
     toast(sync.describe(e));
   }
   return { forceUpload: false };
@@ -162,7 +236,7 @@ async function syncBeforeLoad(romName: string): Promise<{ forceUpload: boolean }
 
 /** Sube la partida actual. Devuelve true si quedó sincronizada. */
 async function syncUpload(force: boolean): Promise<boolean> {
-  if (!sync.getKey() || !running) return false;
+  if (!username() || !running) return false;
   const data = emu.getSave();
   if (!isRealSave(data)) return false;
   const code = gameCode;
@@ -174,94 +248,11 @@ async function syncUpload(force: boolean): Promise<boolean> {
       sync.setState(code, { base: res.savedAt, dirty: false });
       return true;
     }
-    toast('⚠ La nube tiene otra partida. Abrí ☁ para elegir cuál conservar.');
+    toast('⚠ Tu cuenta tiene otra partida de este juego. Al volver a abrirlo vas a elegir cuál queda.');
   } catch (e) {
     toast(sync.describe(e));
-  } finally {
-    if (!syncPanel.hidden) renderSync();
   }
   return false;
-}
-
-/** Reemplaza la partida en uso por la de la nube. */
-async function syncPull() {
-  if (!running || !emu.saveName) return;
-  try {
-    const got = await sync.download(gameCode);
-    if (!got) {
-      toast('Todavía no hay partida en la nube');
-      return;
-    }
-    emu.FS.writeFile(emu.saveName, got.data);
-    if (emu.autoSaveStateName) dropFile(emu.autoSaveStateName);
-    sync.setState(gameCode, { base: got.savedAt, dirty: false });
-    await persist();
-    emu.quickReload();
-    setPaused(false);
-    toast('☁ Partida traída de la nube');
-    setTimeout(() => checkAchievements(true), 1500);
-  } catch (e) {
-    toast(sync.describe(e));
-  }
-  renderSync();
-}
-
-function renderSync(message?: string) {
-  const hasKey = !!sync.getKey();
-  $<HTMLButtonElement>('btn-sync-push').disabled = !hasKey || !running;
-  $<HTMLButtonElement>('btn-sync-pull').disabled = !hasKey || !running;
-  if (message) syncStatus.textContent = message;
-  else if (!hasKey) syncStatus.textContent = 'Desactivada. Poné tu clave para activarla en este dispositivo.';
-  else if (!running) syncStatus.textContent = 'Clave guardada. Abrí un juego para sincronizar su partida.';
-  else {
-    const st = sync.getState(gameCode);
-    const when = st.base ? new Date(st.base).toLocaleString() : 'nunca';
-    syncStatus.textContent =
-      `Juego ${gameCode} · última sincronización: ${when}` + (st.dirty ? ' · hay cambios sin subir' : '');
-  }
-}
-
-async function saveSyncKey() {
-  sync.setKey(syncKeyInput.value.trim());
-  const before = sync.getProfile();
-  const profile = sync.setProfile(syncProfileInput.value);
-  syncProfileInput.value = profile;
-  if (profile !== before && running) {
-    // Otro perfil es otra partida: hay que volver a abrir el juego.
-    emu.forceAutoSaveState();
-    emu.quitGame();
-    running = false;
-    await persist();
-    toggleSync(false);
-    renderLibrary();
-    library.hidden = false;
-    toast(profile ? `Perfil "${profile}": abrí el juego para seguir su partida` : 'Perfil quitado');
-    return;
-  }
-  if (!sync.getKey()) {
-    renderSync();
-    return;
-  }
-  renderSync('Probando la clave…');
-  try {
-    await sync.remoteVersion(gameCode || 'prueba');
-    renderSync();
-    toast('☁ Sincronización activada');
-    if (running) void syncUpload(false);
-  } catch (e) {
-    renderSync(sync.describe(e));
-  }
-}
-
-function toggleSync(open: boolean) {
-  if (open) {
-    syncKeyInput.value = sync.getKey();
-    syncProfileInput.value = sync.getProfile();
-    renderSync();
-  }
-  syncPanel.hidden = !open;
-  // Que el emulador no se coma las teclas mientras se escribe la clave.
-  emu.toggleInput(!open);
 }
 
 // ---------- Logros ----------
@@ -387,6 +378,8 @@ function renderLibrary() {
       return li;
     }),
   );
+  renderAccount();
+  $('btn-export').hidden = !running;
   statusEl.classList.remove('error');
   statusEl.textContent = roms.length ? 'Elegí un juego para seguir tu partida.' : 'Agregá tu ROM para empezar.';
 }
@@ -408,6 +401,12 @@ async function startGame(name: string) {
   starting = true;
   try {
     await startGameInner(name);
+  } catch (e) {
+    // La sesión venció: hay que volver a entrar antes de tocar la partida.
+    if (e instanceof sync.SyncError && e.kind === 'auth') {
+      sync.clearSession();
+      showLogin(sync.describe(e));
+    } else throw e;
   } finally {
     starting = false;
   }
@@ -416,18 +415,27 @@ async function startGame(name: string) {
 async function startGameInner(name: string) {
   if (running) emu.quitGame();
   running = false;
-  const romPath = `${emu.filePaths().gamePath}/${name}`;
-  const profile = sync.getProfile();
-  gameCode = (profile ? profile + '-' : '') + romCode(romPath, stem(name));
+  const paths = emu.filePaths();
+  const romPath = `${paths.gamePath}/${name}`;
+  const user = username();
+  gameCode = await romId(romPath, stem(name));
 
-  // El estado automático es uno por ROM: si la última vez jugó otro perfil, no sirve.
-  const lastKey = `wabgba.lastProfile.${stem(name)}`;
-  if ((localStorage.getItem(lastKey) ?? '') !== profile) {
-    dropFile(`${emu.filePaths().autosave}/${stem(name)}_auto.ss`);
-    localStorage.setItem(lastKey, profile);
+  // La partida que había antes de tener cuenta pasa a ser de la primera cuenta que entra.
+  const adoptedKey = `wabgba.adopted.${stem(name)}`;
+  if (user && !localStorage.getItem(adoptedKey)) {
+    const plain = readFileIfAny(`${paths.savePath}/${stem(name)}.sav`);
+    if (isRealSave(plain) && !readFileIfAny(savePathFor(name))) emu.FS.writeFile(savePathFor(name), plain!);
+    localStorage.setItem(adoptedKey, user);
   }
 
-  if (sync.getKey()) statusEl.textContent = 'Revisando la partida en la nube…';
+  // El punto de reanudación es uno por ROM: si la última vez jugó otra cuenta, no sirve.
+  const lastKey = `wabgba.lastUser.${stem(name)}`;
+  if ((localStorage.getItem(lastKey) ?? '') !== user) {
+    dropFile(`${paths.autosave}/${stem(name)}_auto.ss`);
+    localStorage.setItem(lastKey, user);
+  }
+
+  if (user) statusEl.textContent = 'Revisando la partida de tu cuenta…';
   const { forceUpload } = await syncBeforeLoad(name);
 
   const ok = emu.loadGame(romPath, savePathFor(name));
@@ -488,19 +496,6 @@ function applyVolume() {
   btnMute.classList.toggle('on', muted);
 }
 
-async function saveState() {
-  const slot = Number(slotSel.value);
-  if (emu.saveState(slot)) {
-    await persist();
-    toast(`Estado guardado en la ranura ${slot}`);
-  } else toast('No se pudo guardar el estado');
-}
-
-function loadState() {
-  const slot = Number(slotSel.value);
-  toast(emu.loadState(slot) ? `Estado de la ranura ${slot} cargado` : `La ranura ${slot} está vacía`);
-}
-
 function exportSave() {
   const data = emu.getSave();
   if (!data?.length || !emu.saveName) {
@@ -512,27 +507,6 @@ function exportSave() {
   a.download = baseName(emu.saveName);
   a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 5000);
-}
-
-function importSave(file: File) {
-  if (!emu.saveName) return;
-  if (!confirm('Esto reemplaza la partida actual por la del archivo. ¿Seguir?')) return;
-  // El .sav tiene que llamarse igual que el de la ROM en uso.
-  const renamed = new File([file], baseName(emu.saveName));
-  emu.uploadSaveOrSaveState(renamed, async () => {
-    // El estado automático trae la partida vieja adentro: descartarlo.
-    try {
-      if (emu.autoSaveStateName) emu.FS.unlink(emu.autoSaveStateName);
-    } catch {
-      /* no había */
-    }
-    await persist();
-    emu.quickReload();
-    setPaused(false);
-    toast('Partida importada');
-    // Una partida importada a mano reemplaza también la de la nube.
-    setTimeout(() => void syncUpload(true), 1500);
-  });
 }
 
 // ---------- Teclado ----------
@@ -554,7 +528,7 @@ function setupKeyboard() {
   for (const [key, gba] of KEYS) emu.bindKey(key, gba);
 
   window.addEventListener('keydown', (e) => {
-    if (!running || !library.hidden || !syncPanel.hidden) return;
+    if (!running || !library.hidden || !loginPanel.hidden) return;
     if (e.code === 'Space') {
       e.preventDefault();
       if (!holdingFast) {
@@ -567,12 +541,6 @@ function setupKeyboard() {
     else if (e.code === 'KeyM') {
       muted = !muted;
       applyVolume();
-    } else if (e.code === 'F2') {
-      e.preventDefault();
-      void saveState();
-    } else if (e.code === 'F4') {
-      e.preventDefault();
-      loadState();
     }
   });
   window.addEventListener('keyup', (e) => {
@@ -650,10 +618,7 @@ function setupToolbar() {
     speed = speed === 1 ? 2 : speed === 2 ? 4 : 1;
     applySpeed();
   };
-  $('btn-save-state').onclick = () => void saveState();
-  $('btn-load-state').onclick = loadState;
   $('btn-export').onclick = exportSave;
-  $('btn-import').onclick = () => fileSav.click();
   btnMute.onclick = () => {
     muted = !muted;
     applyVolume();
@@ -669,22 +634,13 @@ function setupToolbar() {
     if (e.target === achvPanel) toggleAchievements(false);
   });
 
-  $('btn-sync').onclick = () => toggleSync(true);
-  $('btn-sync-library').onclick = () => toggleSync(true);
-  $('btn-sync-close').onclick = () => toggleSync(false);
-  $('btn-sync-save').onclick = () => void saveSyncKey();
-  $('btn-sync-push').onclick = async () => {
-    if (!confirm('Esto reemplaza la partida de la nube por la de este dispositivo. ¿Seguir?')) return;
-    if (await syncUpload(true)) toast('☁ Partida subida');
-    renderSync();
-  };
-  $('btn-sync-pull').onclick = () => {
-    if (!confirm('Esto reemplaza la partida de este dispositivo por la de la nube. ¿Seguir?')) return;
-    void syncPull();
-  };
-  syncPanel.addEventListener('click', (e) => {
-    if (e.target === syncPanel) toggleSync(false);
+  $('btn-account').onclick = () => (sync.getSession() ? void logout() : showLogin());
+  $('login-form').addEventListener('submit', (e) => {
+    e.preventDefault();
+    void submitLogin();
   });
+  $('login-switch').onclick = () => setRegisterMode(!registerMode);
+  $('login-skip').onclick = hideLogin;
 
   btnAdd.onclick = () => fileRom.click();
   fileRom.onchange = () => {
@@ -692,12 +648,6 @@ function setupToolbar() {
     fileRom.value = '';
     if (f) addRom(f);
   };
-  fileSav.onchange = () => {
-    const f = fileSav.files?.[0];
-    fileSav.value = '';
-    if (f) importSave(f);
-  };
-
   // Clic fuera de la tarjeta: volver al juego.
   library.addEventListener('click', (e) => {
     if (e.target === library) closeLibraryIfRunning();
@@ -726,6 +676,9 @@ async function main() {
     coreCrashedCallback: () => toast('El juego se colgó. Recargá la página.'),
   });
 
+  // Sin rebobinar: lo único que cuenta es el guardado del juego.
+  emu.setCoreSettings({ rewindEnable: false });
+
   setupToolbar();
   setupKeyboard();
   setupTouch();
@@ -744,7 +697,10 @@ async function main() {
   window.addEventListener('keydown', wakeAudio);
 
   btnAdd.disabled = false;
+  const account = await sync.check();
+  cloud = account !== 'none';
   renderLibrary();
+  if (account === 'out' || (account === 'offline' && !sync.getSession())) showLogin();
   console.log(`${emu.version.projectName} ${emu.version.projectVersion}`);
 }
 

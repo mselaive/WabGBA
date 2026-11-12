@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "pages": "wrangler pages dev dist --d1 DB --binding SYNC_KEY=clave-local --port 8790"
+    "pages": "wrangler pages dev dist --d1 DB --binding INVITE_CODE=invitacion-local --port 8790"
   },
   "dependencies": {
     "@thenick775/mgba-wasm": "^2.6.0"
