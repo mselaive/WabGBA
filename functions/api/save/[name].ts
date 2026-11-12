@@ -7,7 +7,18 @@
 //
 // El PUT manda en `X-Base` la versión de la nube sobre la que se jugó; si la nube ya tiene
 // otra, responde 409 salvo `X-Force: 1`.
-import { addEvent, announce, currentUser, database, json, type Context, type D1, type User } from '../../../server/lib';
+import {
+  addEvent,
+  announce,
+  currentUser,
+  database,
+  json,
+  roomOfGame,
+  type Context,
+  type D1,
+  type Room,
+  type User,
+} from '../../../server/lib';
 import { BADGES } from '../../../src/achievements';
 import { readSave, type Progress } from '../../../src/save';
 
@@ -24,16 +35,16 @@ function parseProgress(text: string | null | undefined): Progress | null {
 }
 
 /** Compara la partida nueva con la anterior y anota lo que cambió: medallas, Liga, torneos. */
-async function announceProgress(db: D1, user: User, game: string, before: Progress | null, now: Progress) {
+async function announceProgress(db: D1, room: Room, user: User, game: string, before: Progress | null, now: Progress) {
   for (let i = 0; i < 8; i++) {
     if (!now.badges[i] || before?.badges[i]) continue;
     if (await addEvent(db, user.id, 'badge', `${game}:badge:${i + 1}`, { game, n: i + 1 })) {
-      await announce(db, `🏅 **${user.username}** consiguió la Medalla ${BADGES[i]} (${now.badgeCount}/8).`);
+      await announce(db, room, `🏅 **${user.username}** consiguió la Medalla ${BADGES[i]} (${now.badgeCount}/8).`);
     }
   }
   if (now.champion && !before?.champion) {
     if (await addEvent(db, user.id, 'champion', `${game}:champion`, { game })) {
-      await announce(db, `👑 **${user.username}** venció a la Liga. ¡Campeón!`);
+      await announce(db, room, `👑 **${user.username}** venció a la Liga. ¡Campeón!`);
     }
   }
 
@@ -50,7 +61,7 @@ async function announceProgress(db: D1, user: User, game: string, before: Progre
     // Va a nombre del sitio (cuenta 0), así se anota una sola vez.
     const names = players.map((p) => p.username);
     if (await addEvent(db, 0, 'tournament', `${game}:tournament:${n}`, { game, n, players: names })) {
-      await announce(db, `⚔️ **¡Torneo!** Todos llegaron a las ${n} medallas: ${names.join(', ')}. A pelear.`);
+      await announce(db, room, `⚔️ **¡Torneo!** Todos llegaron a las ${n} medallas: ${names.join(', ')}. A pelear.`);
     }
   }
 }
@@ -112,7 +123,9 @@ export async function onRequest({ request, env, params }: Context): Promise<Resp
       )
       .bind(user.id, name, savedAt, body, progress)
       .run();
-    if (parsed.ok) await announceProgress(db, user, name, parseProgress(current?.progress), parsed.progress);
+    // Medallas, Liga y torneos sólo se anotan para juegos que están en una sala.
+    const room = parsed.ok ? await roomOfGame(db, name) : null;
+    if (parsed.ok && room) await announceProgress(db, room, user, name, parseProgress(current?.progress), parsed.progress);
     return json({ savedAt });
   }
 
@@ -125,7 +138,7 @@ export async function onRequest({ request, env, params }: Context): Promise<Resp
       db.prepare('DELETE FROM game_saves WHERE user_id = ? AND name = ?').bind(user.id, name),
       db.prepare("DELETE FROM events WHERE user_id = ? AND key LIKE ? || ':%'").bind(user.id, name),
     ]);
-    await announce(db, `🔄 **${user.username}** reinició su partida. Borrón y cuenta nueva.`);
+    await announce(db, await roomOfGame(db, name), `🔄 **${user.username}** reinició su partida. Borrón y cuenta nueva.`);
     return json({ ok: true });
   }
 

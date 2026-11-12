@@ -205,10 +205,7 @@ async function submitLogin() {
 async function logout() {
   await stopGame();
   await sync.signOut();
-  playersCache = null;
-  catalogLoaded = false;
-  feedLoaded = false;
-  feed = [];
+  applyRooms([]);
   renderHub();
   showLogin();
 }
@@ -433,7 +430,7 @@ async function flushPending() {
 }
 
 async function loadFeed() {
-  if (!shared()) return;
+  if (!shared() || sync.getRoom() === null) return;
   try {
     await flushPending();
     const res = await sync.events();
@@ -451,8 +448,8 @@ async function loadFeed() {
 
 /** A quien administra: avisa una vez por cada pedido de anulación nuevo. */
 function announceAppeals() {
-  if (!isAdmin()) return;
-  const key = `wabgba.appeals.${username()}`;
+  if (!canModerate()) return;
+  const key = `wabgba.appeals.${username()}.${sync.getRoom()}`;
   const known = loadJson<number[]>(key, []);
   const waiting = feed.filter((e) => e.appeal?.status === 'pending');
   const fresh = waiting.filter((e) => !known.includes(e.id));
@@ -469,7 +466,7 @@ function announceAppeals() {
 
 /** Avisa de lo que pasó desde la última vez que se miró (lo de los demás). */
 function announceNew() {
-  const key = `wabgba.seen.${username()}`;
+  const key = `wabgba.seen.${username()}.${sync.getRoom()}`;
   const seen = localStorage.getItem(key);
   const newest = feed.reduce((n, e) => Math.max(n, e.id), 0);
   localStorage.setItem(key, String(newest));
@@ -746,7 +743,7 @@ function renderHub() {
 // La biblioteca del sitio: las ROMs que subió la cuenta administradora. Los demás sólo
 // las descargan. Sin servidor de cuentas (`npm run dev`) cada uno carga las suyas.
 
-let catalog: sync.RomInfo[] = loadJson<sync.RomInfo[]>('wabgba.catalog', []);
+let catalog: sync.RomInfo[] = [];
 let catalogLoaded = false;
 let busy = false;
 
@@ -762,7 +759,73 @@ const isAdmin = () => !!sync.getSession()?.admin;
 /** Hay biblioteca compartida: el sitio tiene cuentas y hay una sesión abierta. */
 const shared = () => cloud && !!username();
 /** Quién puede cargar ROMs: la cuenta administradora (o cualquiera si no hay cuentas). */
-const canAdd = () => !cloud || isAdmin();
+const canAdd = () => !cloud || (isAdmin() && sync.getRoom() !== null);
+
+// ----- Salas -----
+// Cada sala es un grupo aparte: sus ROMs, su historial, sus vidas y su líder. Quien
+// administra el sitio las crea y está en todas; el resto entra con el código de la suya.
+
+let rooms: sync.RoomInfo[] = [];
+let roomsLoaded = false;
+
+const roomKey = () => `wabgba.room.${username()}`;
+const catalogKey = () => `wabgba.catalog.${sync.getRoom() ?? 0}`;
+const currentRoom = () => rooms.find((r) => r.id === sync.getRoom()) ?? null;
+/** Esta cuenta decide las reglas y las anulaciones de la sala actual (líder o administración). */
+const canModerate = () => shared() && !!currentRoom()?.moderator;
+
+/** Guarda la lista de salas y se para en una: la pedida, la de la última vez o la primera. */
+function applyRooms(list: sync.RoomInfo[], prefer?: number | null) {
+  rooms = list;
+  const stored = Number(localStorage.getItem(roomKey()));
+  const pick = rooms.find((r) => r.id === prefer) ?? rooms.find((r) => r.id === stored) ?? rooms[0] ?? null;
+  sync.setRoom(pick?.id ?? null);
+  if (pick) {
+    localStorage.setItem(roomKey(), String(pick.id));
+    lives = pick.lives;
+  }
+  // Todo lo que se muestra depende de la sala: se vuelve a pedir.
+  catalog = pick ? loadJson<sync.RomInfo[]>(catalogKey(), []) : [];
+  catalogLoaded = false;
+  feed = [];
+  feedLoaded = false;
+  playersCache = null;
+  renderRoomSelect();
+}
+
+async function loadRooms(prefer?: number | null) {
+  if (!shared()) return;
+  try {
+    applyRooms(await sync.listRooms(), prefer);
+    roomsLoaded = true;
+  } catch (e) {
+    if (e instanceof sync.SyncError && e.kind === 'auth') onCloudError(e);
+  }
+}
+
+async function switchRoom(id: number) {
+  if (id === sync.getRoom()) return;
+  // El juego abierto es de la sala anterior.
+  await stopGame();
+  applyRooms(rooms, id);
+  sfx('ok');
+  toast(`Sala: ${currentRoom()?.name ?? ''}`);
+  renderHub();
+  void loadFeed();
+}
+
+function renderRoomSelect() {
+  const select = $<HTMLSelectElement>('room-select');
+  select.hidden = !shared() || rooms.length < 2;
+  select.replaceChildren(
+    ...rooms.map((room) => {
+      const option = el('option', '', room.name);
+      option.value = String(room.id);
+      return option;
+    }),
+  );
+  select.value = String(sync.getRoom() ?? '');
+}
 
 /** Con qué archivo de este navegador se corresponde cada ROM de la biblioteca. */
 const fileMap = () => loadJson<Record<string, string>>('wabgba.files', {});
@@ -792,10 +855,10 @@ function onCloudError(e: unknown) {
 }
 
 async function loadCatalog() {
-  if (!shared()) return;
+  if (!shared() || sync.getRoom() === null) return;
   try {
     catalog = await sync.listRoms();
-    localStorage.setItem('wabgba.catalog', JSON.stringify(catalog));
+    localStorage.setItem(catalogKey(), JSON.stringify(catalog));
     catalogLoaded = true;
     if (tab === 'play' && !hub.hidden && !busy) renderPlay();
   } catch (e) {
@@ -843,7 +906,7 @@ async function publishRom(name: string) {
     }
     linkFile(id, name);
     catalog = await sync.listRoms();
-    localStorage.setItem('wabgba.catalog', JSON.stringify(catalog));
+    localStorage.setItem(catalogKey(), JSON.stringify(catalog));
     sfx('ok');
     busy = false;
     renderPlay();
@@ -910,7 +973,7 @@ function renderPlay() {
           if (c.rom) {
             await sync.deleteRom(c.rom.id);
             catalog = catalog.filter((r) => r.id !== c.rom!.id);
-            localStorage.setItem('wabgba.catalog', JSON.stringify(catalog));
+            localStorage.setItem(catalogKey(), JSON.stringify(catalog));
           }
           if (c.file) {
             if (playing) await stopGame();
@@ -944,7 +1007,7 @@ function renderPlay() {
   $('play-note').textContent = !cloud
     ? 'La ROM queda sólo en este navegador. La partida se guarda cuando guardás dentro del juego.'
     : isAdmin()
-      ? 'Sos quien administra: las ROMs que subas a la biblioteca las ven todos los participantes.'
+      ? `Sos quien administra: las ROMs que subas van a la sala «${currentRoom()?.name ?? '…'}» y las ven sus participantes.`
       : 'Los juegos los elige quien administra el sitio. La partida se guarda cuando guardás dentro del juego y viaja con tu cuenta.';
 
   if (busy) return;
@@ -953,6 +1016,8 @@ function renderPlay() {
       ? 'El juego está en pausa. Volvé cuando quieras.'
       : cloud && !username()
         ? 'Entrá con tu cuenta para ver los juegos.'
+        : shared() && roomsLoaded && !rooms.length
+          ? 'No estás en ninguna sala. Pedí un código y unite desde ⚙.'
         : list.length
           ? 'Elegí un cartucho para seguir tu aventura.'
           : canAdd()
@@ -1087,8 +1152,8 @@ function eventCard(e: FeedItem): HTMLElement {
         `¿Anular "${text.title}"?`,
       ),
     );
-  } else if (isAdmin()) {
-    // Quien administra decide: aprueba o rechaza un pedido, o anula por su cuenta.
+  } else if (canModerate()) {
+    // El líder de la sala decide: aprueba o rechaza un pedido, o anula por su cuenta.
     if (pending) {
       actions.append(
         act('✔ Aprobar', () => sync.deleteEvent(e.id), `¿Aprobar el pedido y anular "${text.title}"?`),
@@ -1220,7 +1285,7 @@ let playersError = '';
 let playersLoading = false;
 
 async function loadPlayers() {
-  if (playersLoading) return;
+  if (playersLoading || sync.getRoom() === null) return;
   playersLoading = true;
   try {
     const res = await sync.players();
@@ -1360,23 +1425,119 @@ function setBinding(action: controls.Action, code: string) {
   renderBindings();
 }
 
+/** Estado del bloque de salas en Ajustes. */
+function roomsStatus(text: string, bad = false) {
+  $('rooms-status').textContent = text;
+  if (text) sfx(bad ? 'error' : 'ok');
+}
+
+function renderRooms() {
+  $('rooms-list').replaceChildren(
+    ...rooms.map((room) => {
+      const current = room.id === sync.getRoom();
+      const row = el('div', 'room-row' + (current ? ' on' : ''));
+      const name = el('button', 'room-name', room.name + (current ? '  ·  ACTUAL' : ''));
+      name.type = 'button';
+      name.title = 'Pasar a esta sala';
+      name.onclick = async () => {
+        await switchRoom(room.id);
+        renderRooms();
+        void showRules();
+      };
+      const facts = [`Líder: ${room.leader ?? 'sin líder'}`, `${room.lives} vidas`];
+      if (room.code) facts.unshift(`Código: ${room.code}`);
+      row.append(name, el('small', '', facts.join('  ·  ')));
+
+      // Sólo quien administra el sitio nombra al líder.
+      if (isAdmin()) {
+        const line = el('div', 'row');
+        const input = el('input');
+        input.placeholder = 'Usuario del líder (vacío: sin líder)';
+        input.value = room.leader ?? '';
+        input.autocapitalize = 'none';
+        input.spellcheck = false;
+        const set = el('button', 'px-btn small', 'NOMBRAR LÍDER');
+        set.type = 'button';
+        set.onclick = async () => {
+          try {
+            applyRooms(await sync.updateRoom(room.id, { leader: input.value }), sync.getRoom());
+            renderRooms();
+            roomsStatus(input.value.trim() ? `${input.value.trim()} ahora lidera ${room.name}.` : `${room.name} quedó sin líder.`);
+          } catch (e) {
+            roomsStatus(sync.describe(e), true);
+          }
+        };
+        line.append(input, set);
+        row.append(line);
+      }
+      return row;
+    }),
+  );
+}
+
+async function joinRoomByCode() {
+  const input = $<HTMLInputElement>('join-code');
+  if (!input.value.trim()) return;
+  try {
+    const res = await sync.joinRoom(input.value);
+    await stopGame();
+    applyRooms(res.rooms, res.joined);
+    roomsLoaded = true;
+    input.value = '';
+    renderRooms();
+    void showRules();
+    void loadFeed();
+    roomsStatus(`¡Listo! Estás en ${currentRoom()?.name ?? 'la sala'}.`);
+  } catch (e) {
+    roomsStatus(sync.describe(e), true);
+  }
+}
+
+async function createRoom() {
+  const name = $<HTMLInputElement>('new-room-name');
+  const code = $<HTMLInputElement>('new-room-code');
+  try {
+    const res = await sync.createRoom(name.value, code.value);
+    await stopGame();
+    applyRooms(res.rooms, res.created);
+    name.value = '';
+    code.value = '';
+    renderRooms();
+    void showRules();
+    roomsStatus(`Sala creada. Ya estás parado en ${currentRoom()?.name ?? 'ella'}: subile su ROM desde JUGAR.`);
+  } catch (e) {
+    roomsStatus(sync.describe(e), true);
+  }
+}
+
+/** Muestra las reglas de la sala actual a quien puede cambiarlas. */
+async function showRules() {
+  const room = currentRoom();
+  const allowed = canModerate() && !!room;
+  $('admin').hidden = !allowed;
+  $('set-status').textContent = '';
+  if (!allowed) return;
+  $('admin-title').textContent = `Reglas de ${room.name}`;
+  try {
+    const rules = await sync.getSettings();
+    lives = rules.lives;
+    $<HTMLInputElement>('set-lives').value = String(rules.lives);
+    $<HTMLInputElement>('set-webhook').value = rules.webhook ?? '';
+  } catch (e) {
+    $('set-status').textContent = sync.describe(e);
+  }
+}
+
 async function openSettings() {
   sfx('ok');
   listening = null;
   renderBindings();
-  const admin = shared() && isAdmin();
-  $('admin').hidden = !admin;
-  $('set-status').textContent = '';
+  $('rooms-box').hidden = !shared();
+  $('room-create').hidden = !isAdmin();
+  $('rooms-status').textContent = '';
+  renderRooms();
   settingsPanel.hidden = false;
-  if (!admin) return;
-  try {
-    const s = await sync.getSettings();
-    lives = s.lives;
-    $<HTMLInputElement>('set-lives').value = String(s.lives);
-    $<HTMLInputElement>('set-webhook').value = s.webhook ?? '';
-  } catch (e) {
-    $('set-status').textContent = sync.describe(e);
-  }
+  await showRules();
 }
 
 function closeSettings() {
@@ -1400,6 +1561,9 @@ async function saveRules() {
     await sync.saveSettings(value, webhook);
     lives = value;
     playersCache = null;
+    const room = currentRoom();
+    if (room) room.lives = value;
+    renderRooms();
     status.textContent = webhook ? '¡Guardado! Si el webhook es nuevo, ya debería haber llegado un mensaje al canal.' : '¡Guardado!';
     sfx('ok');
   } catch (e) {
@@ -1411,6 +1575,8 @@ async function saveRules() {
 /** Trae lo que depende de la cuenta: controles guardados e historial. */
 async function loadAccountData() {
   if (!shared()) return;
+  await loadRooms();
+  if (!hub.hidden) renderHub();
   try {
     const prefs = await sync.getPrefs();
     if (prefs.controls) {
@@ -1760,6 +1926,9 @@ function setupUi() {
     renderBindings();
   };
   $('btn-set-save').onclick = () => void saveRules();
+  $('btn-join').onclick = () => void joinRoomByCode();
+  $('btn-room-create').onclick = () => void createRoom();
+  $<HTMLSelectElement>('room-select').onchange = (e) => void switchRoom(Number((e.target as HTMLSelectElement).value));
   $('btn-export').onclick = exportSave;
   $('btn-reset').onclick = () => void resetRun();
   $('btn-account').onclick = () => (sync.getSession() ? void logout() : showLogin());

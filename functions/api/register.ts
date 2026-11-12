@@ -1,16 +1,32 @@
-// POST /api/register { username, password, invite } -> { token, username }
-import { createSession, database, hashPassword, isAdmin, json, randomHex, readBody, safeEqual, sha256, type Context } from '../../server/lib';
+// POST /api/register { username, password, invite } -> { token, username, admin }
+// El código de invitación es el de una sala: la cuenta nueva entra directo a esa sala.
+import {
+  createSession,
+  database,
+  hashPassword,
+  isAdmin,
+  joinRoom,
+  json,
+  randomHex,
+  readBody,
+  roomByCode,
+  type Context,
+} from '../../server/lib';
 
 export async function onRequestPost({ request, env }: Context): Promise<Response> {
   const db = await database(env);
-  if (!db || !env.INVITE_CODE) return json({ error: 'not-configured' }, 501);
+  if (!db) return json({ error: 'not-configured' }, 501);
+  // Sin ninguna sala no hay código que sirva: falta configurar INVITE_CODE.
+  if (!(await db.prepare('SELECT id FROM rooms LIMIT 1').first<{ id: number }>())) {
+    return json({ error: 'not-configured' }, 501);
+  }
 
   const body = await readBody(request);
   const username = String(body.username ?? '').trim().toLowerCase();
   const password = String(body.password ?? '');
-  const invite = String(body.invite ?? '').trim();
 
-  if (!safeEqual(await sha256(invite), await sha256(env.INVITE_CODE))) return json({ error: 'bad-invite' }, 403);
+  const room = await roomByCode(db, String(body.invite ?? ''));
+  if (!room) return json({ error: 'bad-invite' }, 403);
   if (!/^[a-z0-9_-]{3,20}$/.test(username) || password.length < 6 || password.length > 200) {
     return json({ error: 'invalid' }, 400);
   }
@@ -25,6 +41,7 @@ export async function onRequestPost({ request, env }: Context): Promise<Response
     .run();
   const user = await db.prepare('SELECT id FROM users WHERE username = ?').bind(username).first<{ id: number }>();
   if (!user) return json({ error: 'server' }, 500);
+  await joinRoom(db, room.id, user.id);
 
   return json({ token: await createSession(db, user.id), username, admin: await isAdmin(db, user.id) });
 }

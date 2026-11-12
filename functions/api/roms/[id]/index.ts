@@ -1,9 +1,9 @@
-// Alta y baja de una ROM de la biblioteca. Sólo la cuenta administradora.
+// Alta y baja de una ROM en la biblioteca de una sala. Sólo quien administra el sitio.
 //
-//   PUT    /api/roms/<id> { title, size, chunks }  -> empieza la subida (borra lo que hubiera)
-//   POST   /api/roms/<id>                          -> la publica, si llegaron todos los trozos
-//   DELETE /api/roms/<id>                          -> la quita
-import { currentUser, database, json, readBody, type Context } from '../../../../server/lib';
+//   PUT    /api/roms/<id> { title, size, chunks, room }  -> empieza la subida (borra lo que hubiera)
+//   POST   /api/roms/<id>                                -> la publica, si llegaron todos los trozos
+//   DELETE /api/roms/<id>                                -> la quita
+import { currentUser, database, json, readBody, roomById, roomOfGame, type Context } from '../../../../server/lib';
 
 /** Tope por ROM: un cartucho de GBA llega a 32 MB. */
 const MAX_BYTES = 34 * 1024 * 1024;
@@ -26,6 +26,12 @@ export async function onRequest({ request, env, params }: Context): Promise<Resp
     const chunks = Number(body.chunks);
     if (!title || !Number.isInteger(size) || size <= 0 || size > MAX_BYTES) return json({ error: 'bad-size' }, 413);
     if (chunks !== Math.ceil(size / CHUNK_BYTES)) return json({ error: 'invalid' }, 400);
+    const room = await roomById(db, Number(body.room));
+    if (!room) return json({ error: 'no-room' }, 404);
+    // Una ROM vive en una sola sala: ahí van sus partidas, sus bajas y su ranking.
+    const owner = await roomOfGame(db, id);
+    if (owner && owner.id !== room.id) return json({ error: 'rom-elsewhere', room: owner.name }, 409);
+
     await db.batch([
       db.prepare('DELETE FROM rom_chunks WHERE rom_id = ?').bind(id),
       db
@@ -34,6 +40,7 @@ export async function onRequest({ request, env, params }: Context): Promise<Resp
             'ON CONFLICT(id) DO UPDATE SET title = ?2, size = ?3, chunks = ?4, ready = 0',
         )
         .bind(id, title, size, chunks, Date.now()),
+      db.prepare('INSERT OR REPLACE INTO room_roms (rom_id, room_id) VALUES (?, ?)').bind(id, room.id),
     ]);
     return json({ ok: true });
   }
@@ -54,6 +61,7 @@ export async function onRequest({ request, env, params }: Context): Promise<Resp
     await db.batch([
       db.prepare('DELETE FROM rom_chunks WHERE rom_id = ?').bind(id),
       db.prepare('DELETE FROM roms WHERE id = ?').bind(id),
+      db.prepare('DELETE FROM room_roms WHERE rom_id = ?').bind(id),
     ]);
     return json({ ok: true });
   }

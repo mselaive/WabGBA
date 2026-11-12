@@ -44,6 +44,7 @@
       <header id="hub-head">
         <div class="logo" aria-label="WabGBA"><span>W</span><span>a</span><span>b</span><span class="alt">G</span><span class="alt">B</span><span class="alt">A</span></div>
         <div id="account">
+          <select id="room-select" title="Cambiar de sala" hidden></select>
           <span id="account-name"></span>
           <button id="btn-settings" class="px-btn small ghost" title="Controles y ajustes">⚙</button>
           <button id="btn-account" class="px-btn small" hidden>ENTRAR</button>
@@ -131,9 +132,31 @@
           <button id="btn-controls-reset" class="link dark" type="button">Volver a los de fábrica</button>
         </section>
 
+        <section id="rooms-box" class="box" hidden>
+          <h3 class="px-title">Salas</h3>
+          <p class="sub">Cada sala es un grupo aparte, con sus juegos, su historial y sus vidas. Tocá una para pasarte.</p>
+          <div id="rooms-list"></div>
+          <label><span>UNIRME A OTRA SALA</span>
+            <input id="join-code" type="text" placeholder="Código de la sala" autocomplete="off" autocapitalize="none" spellcheck="false" maxlength="30" />
+          </label>
+          <button id="btn-join" class="px-btn" type="button">UNIRME</button>
+          <div id="room-create" hidden>
+            <h3 class="px-title">Crear una sala</h3>
+            <p class="sub">Sólo vos podés. El código es lo que le pasás a la gente para que entre.</p>
+            <label><span>NOMBRE</span>
+              <input id="new-room-name" type="text" autocomplete="off" maxlength="30" />
+            </label>
+            <label><span>CÓDIGO DE INVITACIÓN</span>
+              <input id="new-room-code" type="text" autocomplete="off" autocapitalize="none" spellcheck="false" maxlength="30" />
+            </label>
+            <button id="btn-room-create" class="px-btn" type="button">CREAR SALA</button>
+          </div>
+          <p id="rooms-status" class="sub"></p>
+        </section>
+
         <section id="admin" class="box" hidden>
-          <h3 class="px-title">Reglas del randomlocke</h3>
-          <p class="sub">Sólo vos ves esta parte.</p>
+          <h3 id="admin-title" class="px-title">Reglas de la sala</h3>
+          <p class="sub">Las decide el líder de la sala (y quien administra el sitio).</p>
           <label><span>VIDAS POR PARTICIPANTE</span>
             <input id="set-lives" type="number" min="1" max="99" />
           </label>

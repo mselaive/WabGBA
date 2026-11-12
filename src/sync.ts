@@ -34,7 +34,12 @@ export type SyncErrorKind =
   | 'invalid'
   | 'forbidden'
   | 'too-big'
-  | 'bad-webhook';
+  | 'bad-webhook'
+  | 'no-room'
+  | 'bad-room'
+  | 'code-taken'
+  | 'bad-leader'
+  | 'rom-elsewhere';
 
 export class SyncError extends Error {
   constructor(public kind: SyncErrorKind) {
@@ -56,6 +61,11 @@ export function describe(e: unknown): string {
     forbidden: 'Sólo la cuenta administradora puede hacer eso.',
     'too-big': 'El archivo es demasiado grande.',
     'bad-webhook': 'Eso no parece un webhook de Discord.',
+    'no-room': 'No estás en esa sala.',
+    'bad-room': 'La sala necesita un nombre y un código de 3 a 30 letras, números o guiones.',
+    'code-taken': 'Ya hay otra sala con ese código.',
+    'bad-leader': 'El líder tiene que ser alguien que ya esté en la sala.',
+    'rom-elsewhere': 'Esa ROM ya está en otra sala. Una ROM vive en una sola sala.',
   }[kind];
 }
 
@@ -144,16 +154,88 @@ export interface RomInfo {
 
 export const CHUNK_BYTES = 1024 * 1024;
 
+/** Errores que el servidor nombra tal cual y que tienen su propio mensaje. */
+const NAMED: SyncErrorKind[] = [
+  'forbidden',
+  'taken',
+  'bad-invite',
+  'invalid',
+  'bad-webhook',
+  'no-room',
+  'bad-room',
+  'code-taken',
+  'bad-leader',
+  'rom-elsewhere',
+];
+
 async function okJson(res: Response): Promise<Response> {
+  if (!isJson(res)) throw new SyncError('not-configured');
+  if (res.ok) return res;
   if (res.status === 401) throw new SyncError('auth');
-  if (res.status === 403) throw new SyncError('forbidden');
   if (res.status === 413) throw new SyncError('too-big');
-  if (!res.ok || !isJson(res)) throw new SyncError(isJson(res) ? 'server' : 'not-configured');
-  return res;
+  const body = (await res.json().catch(() => ({}))) as { error?: string };
+  const named = NAMED.find((kind) => kind === body.error);
+  throw new SyncError(named ?? (res.status === 403 ? 'forbidden' : 'server'));
+}
+
+// ---------- Salas ----------
+
+export interface RoomInfo {
+  id: number;
+  name: string;
+  lives: number;
+  /** Nombre de usuario del líder, si tiene. */
+  leader: string | null;
+  /** Esta cuenta decide las reglas y las anulaciones de la sala. */
+  moderator: boolean;
+  /** El código de invitación; sólo le llega a quien puede invitar. */
+  code?: string;
+}
+
+/** La sala en la que se está: va en todos los pedidos que dependen de una sala. */
+let roomId: number | null = null;
+
+export const getRoom = () => roomId;
+export function setRoom(id: number | null) {
+  roomId = id;
+}
+
+const inRoom = () => `?room=${roomId ?? 0}`;
+
+export async function listRooms(): Promise<RoomInfo[]> {
+  const res = await okJson(await call('rooms'));
+  return ((await res.json()) as { rooms: RoomInfo[] }).rooms;
+}
+
+const postJson = (body: unknown, method = 'POST'): RequestInit => ({
+  method,
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(body),
+});
+
+/** Crea una sala (sólo quien administra el sitio). Devuelve las salas y el id de la nueva. */
+export async function createRoom(name: string, code: string): Promise<{ rooms: RoomInfo[]; created: number | null }> {
+  const res = await okJson(await call('rooms', postJson({ name, code })));
+  return (await res.json()) as { rooms: RoomInfo[]; created: number | null };
+}
+
+/** Suma esta cuenta a otra sala con su código. */
+export async function joinRoom(code: string): Promise<{ rooms: RoomInfo[]; joined: number }> {
+  const res = await okJson(await call('rooms/join', postJson({ code })));
+  return (await res.json()) as { rooms: RoomInfo[]; joined: number };
+}
+
+/** Cambia nombre, código o líder de una sala (sólo quien administra el sitio). */
+export async function updateRoom(
+  id: number,
+  changes: { name?: string; code?: string; leader?: string },
+): Promise<RoomInfo[]> {
+  const res = await okJson(await call(`rooms/${id}`, postJson(changes, 'PUT')));
+  return ((await res.json()) as { rooms: RoomInfo[] }).rooms;
 }
 
 export async function listRoms(): Promise<RomInfo[]> {
-  const res = await okJson(await call('roms'));
+  const res = await okJson(await call('roms' + inRoom()));
   return ((await res.json()) as { roms: RomInfo[] }).roms;
 }
 
@@ -188,7 +270,7 @@ export async function uploadRom(
     await call(path, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ title, size: data.length, chunks }),
+      body: JSON.stringify({ title, size: data.length, chunks, room: roomId }),
     }),
   );
   for (let n = 0; n < chunks; n++) {
@@ -218,9 +300,9 @@ export interface Player {
   deaths: number;
 }
 
-export async function players(): Promise<{ players: Player[]; lives: number }> {
-  const res = await okJson(await call('players'));
-  return (await res.json()) as { players: Player[]; lives: number };
+export async function players(): Promise<{ players: Player[]; lives: number; leader: string | null }> {
+  const res = await okJson(await call('players' + inRoom()));
+  return (await res.json()) as { players: Player[]; lives: number; leader: string | null };
 }
 
 // ---------- Historial ----------
@@ -249,7 +331,7 @@ export interface GameEvent {
 }
 
 export async function events(): Promise<{ events: GameEvent[]; lives: number }> {
-  const res = await okJson(await call('events'));
+  const res = await okJson(await call('events' + inRoom()));
   return (await res.json()) as { events: GameEvent[]; lives: number };
 }
 
@@ -315,21 +397,12 @@ export interface SiteSettings {
 }
 
 export async function getSettings(): Promise<SiteSettings> {
-  const res = await okJson(await call('settings'));
+  const res = await okJson(await call('settings' + inRoom()));
   return (await res.json()) as SiteSettings;
 }
 
 export async function saveSettings(lives: number, webhook: string): Promise<void> {
-  const res = await call('settings', {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ lives, webhook }),
-  });
-  if (res.status === 400) {
-    const body = (await res.json().catch(() => ({}))) as { error?: string };
-    throw new SyncError(body.error === 'bad-webhook' ? 'bad-webhook' : 'invalid');
-  }
-  await okJson(res);
+  await okJson(await call('settings' + inRoom(), postJson({ lives, webhook }, 'PUT')));
 }
 
 export async function getPrefs(): Promise<Record<string, unknown>> {

@@ -1,8 +1,8 @@
 // Un trozo de una ROM de la biblioteca.
 //
-//   GET /api/roms/<id>/<n>  -> bytes (cualquier cuenta)
-//   PUT /api/roms/<id>/<n>  -> lo guarda (sólo la cuenta administradora)
-import { currentUser, database, json, type Context } from '../../../../server/lib';
+//   GET /api/roms/<id>/<n>  -> bytes (cuentas de la sala de esa ROM)
+//   PUT /api/roms/<id>/<n>  -> lo guarda (sólo quien administra el sitio)
+import { canEnter, currentUser, database, json, roomOfGame, type Context } from '../../../../server/lib';
 
 const CHUNK_BYTES = 1024 * 1024;
 
@@ -17,6 +17,9 @@ export async function onRequest({ request, env, params }: Context): Promise<Resp
   if (!/^[A-Za-z0-9_-]{1,40}$/.test(id) || !Number.isInteger(n) || n < 0) return json({ error: 'bad-name' }, 400);
 
   if (request.method === 'GET') {
+    // Sólo descargan la ROM quienes están en su sala.
+    const room = await roomOfGame(db, id);
+    if (!room || !(await canEnter(db, user, room))) return json({ error: 'not-found' }, 404);
     const row = await db
       .prepare(
         'SELECT c.data AS data FROM rom_chunks c JOIN roms r ON r.id = c.rom_id ' +

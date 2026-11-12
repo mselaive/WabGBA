@@ -12,7 +12,7 @@ export interface D1 {
 }
 export interface Env {
   DB?: D1;
-  /** Código que hay que saber para crear una cuenta. */
+  /** Código de la primera sala. Las demás salas y sus códigos viven en la base. */
   INVITE_CODE?: string;
 }
 export interface Context {
@@ -23,7 +23,7 @@ export interface Context {
 export interface User {
   id: number;
   username: string;
-  /** La primera cuenta creada administra el sitio: es la única que sube ROMs. */
+  /** La primera cuenta creada administra el sitio: crea salas, nombra líderes y sube ROMs. */
   admin: boolean;
 }
 
@@ -73,11 +73,49 @@ export async function database(env: Env): Promise<D1 | null> {
         'CREATE TABLE IF NOT EXISTS rom_chunks (rom_id TEXT NOT NULL, n INTEGER NOT NULL, data BLOB NOT NULL, ' +
           'PRIMARY KEY (rom_id, n))',
       ),
+      // Salas: cada una es un grupo con su código de invitación, sus ROMs, sus reglas y su líder.
+      env.DB.prepare(
+        'CREATE TABLE IF NOT EXISTS rooms (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, ' +
+          "code TEXT NOT NULL UNIQUE, leader_id INTEGER, lives INTEGER NOT NULL, discord TEXT NOT NULL DEFAULT '', " +
+          'created_at INTEGER NOT NULL)',
+      ),
+      env.DB.prepare(
+        'CREATE TABLE IF NOT EXISTS room_members (room_id INTEGER NOT NULL, user_id INTEGER NOT NULL, ' +
+          'joined_at INTEGER NOT NULL, PRIMARY KEY (room_id, user_id))',
+      ),
+      // Una ROM pertenece a una sola sala; de ahí sale a qué sala va cada evento.
+      env.DB.prepare('CREATE TABLE IF NOT EXISTS room_roms (rom_id TEXT PRIMARY KEY, room_id INTEGER NOT NULL)'),
     ]);
+    await seedFirstRoom(env.DB, env.INVITE_CODE);
     ready = true;
   }
   return env.DB;
 }
+
+/**
+ * Si todavía no hay salas, arma la primera con lo que el sitio ya tenía: el código de
+ * invitación original, todas las cuentas, todas las ROMs y las reglas vigentes.
+ */
+async function seedFirstRoom(db: D1, inviteCode: string | undefined) {
+  const any = await db.prepare('SELECT id FROM rooms LIMIT 1').first<{ id: number }>();
+  const code = normalizeCode(inviteCode ?? '');
+  if (any || !code) return;
+  const lives = Number((await db.prepare("SELECT value FROM settings WHERE key = 'lives'").first<{ value: string }>())?.value);
+  const discord = (await db.prepare("SELECT value FROM settings WHERE key = 'discord'").first<{ value: string }>())?.value ?? '';
+  await db
+    .prepare('INSERT OR IGNORE INTO rooms (name, code, leader_id, lives, discord, created_at) VALUES (?, ?, NULL, ?, ?, ?)')
+    .bind('Sala principal', code, Number.isInteger(lives) && lives > 0 ? lives : DEFAULT_LIVES, discord, Date.now())
+    .run();
+  const room = await db.prepare('SELECT id FROM rooms WHERE code = ?').bind(code).first<{ id: number }>();
+  if (!room) return;
+  await db.batch([
+    db.prepare('INSERT OR IGNORE INTO room_members (room_id, user_id, joined_at) SELECT ?1, id, ?2 FROM users').bind(room.id, Date.now()),
+    db.prepare('INSERT OR IGNORE INTO room_roms (rom_id, room_id) SELECT id, ?1 FROM roms').bind(room.id),
+  ]);
+}
+
+/** Los códigos de sala no distinguen mayúsculas ni espacios alrededor. */
+export const normalizeCode = (code: string) => code.trim().toLowerCase();
 
 const hex = (buf: ArrayBuffer) => [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('');
 
@@ -150,35 +188,105 @@ export async function readBody(request: Request): Promise<Record<string, unknown
   }
 }
 
-// ---------- Ajustes del sitio (los cambia la cuenta administradora) ----------
+// ---------- Salas ----------
 
 export const DEFAULT_LIVES = 10;
 
-export async function getSetting(db: D1, key: string): Promise<string | null> {
-  const row = await db.prepare('SELECT value FROM settings WHERE key = ?').bind(key).first<{ value: string }>();
-  return row?.value ?? null;
+export interface Room {
+  id: number;
+  name: string;
+  code: string;
+  leader_id: number | null;
+  lives: number;
+  discord: string;
 }
 
-export async function setSetting(db: D1, key: string, value: string): Promise<void> {
+const ROOM_COLUMNS = 'id, name, code, leader_id, lives, discord';
+
+export async function roomById(db: D1, id: number): Promise<Room | null> {
+  if (!Number.isInteger(id) || id < 1) return null;
+  return db.prepare(`SELECT ${ROOM_COLUMNS} FROM rooms WHERE id = ?`).bind(id).first<Room>();
+}
+
+export async function roomByCode(db: D1, code: string): Promise<Room | null> {
+  const clean = normalizeCode(code);
+  if (!clean) return null;
+  return db.prepare(`SELECT ${ROOM_COLUMNS} FROM rooms WHERE code = ?`).bind(clean).first<Room>();
+}
+
+/** La sala a la que pertenece una ROM (y, por lo tanto, sus partidas y eventos). */
+export async function roomOfGame(db: D1, game: string): Promise<Room | null> {
+  return db
+    .prepare(
+      'SELECT r.id AS id, r.name AS name, r.code AS code, r.leader_id AS leader_id, r.lives AS lives, r.discord AS discord ' +
+        'FROM room_roms rr JOIN rooms r ON r.id = rr.room_id WHERE rr.rom_id = ?',
+    )
+    .bind(game)
+    .first<Room>();
+}
+
+export async function isMember(db: D1, roomId: number, userId: number): Promise<boolean> {
+  const row = await db
+    .prepare('SELECT 1 AS yes FROM room_members WHERE room_id = ? AND user_id = ?')
+    .bind(roomId, userId)
+    .first<{ yes: number }>();
+  return !!row;
+}
+
+export async function joinRoom(db: D1, roomId: number, userId: number): Promise<void> {
   await db
-    .prepare('INSERT INTO settings (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = ?2')
-    .bind(key, value)
+    .prepare('INSERT OR IGNORE INTO room_members (room_id, user_id, joined_at) VALUES (?, ?, ?)')
+    .bind(roomId, userId, Date.now())
     .run();
 }
 
-export async function getLives(db: D1): Promise<number> {
-  const lives = Number(await getSetting(db, 'lives'));
-  return Number.isInteger(lives) && lives > 0 ? lives : DEFAULT_LIVES;
+/** Quien administra el sitio entra a todas las salas; el resto, sólo a las suyas. */
+export async function canEnter(db: D1, user: User, room: Room): Promise<boolean> {
+  return user.admin || (await isMember(db, room.id, user.id));
+}
+
+/** Las reglas y las anulaciones de una sala las decide su líder (o quien administra el sitio). */
+export const canModerate = (user: User, room: Room) => user.admin || room.leader_id === user.id;
+
+/** La sala que pide la solicitud (`?room=<id>`), si existe y la cuenta puede entrar. */
+export async function requestedRoom(db: D1, request: Request, user: User): Promise<Room | null> {
+  const room = await roomById(db, Number(new URL(request.url).searchParams.get('room')));
+  return room && (await canEnter(db, user, room)) ? room : null;
+}
+
+/** Las salas de una cuenta, como las ve ella. El código sólo lo ve quien puede invitar. */
+export async function roomsFor(db: D1, user: User) {
+  const sql =
+    'SELECT r.id AS id, r.name AS name, r.code AS code, r.leader_id AS leader_id, r.lives AS lives, ' +
+    'u.username AS leader FROM rooms r LEFT JOIN users u ON u.id = r.leader_id ';
+  const { results } = user.admin
+    ? await db.prepare(sql + 'ORDER BY r.id').all<Room & { leader: string | null }>()
+    : await db
+        .prepare(sql + 'JOIN room_members m ON m.room_id = r.id WHERE m.user_id = ? ORDER BY r.id')
+        .bind(user.id)
+        .all<Room & { leader: string | null }>();
+  return results.map((r) => {
+    const moderator = user.admin || r.leader_id === user.id;
+    return {
+      id: r.id,
+      name: r.name,
+      lives: r.lives,
+      leader: r.leader,
+      /** Esta cuenta decide las reglas y las anulaciones de la sala. */
+      moderator,
+      ...(moderator ? { code: r.code } : {}),
+    };
+  });
 }
 
 /** Sólo se aceptan webhooks de Discord: el servidor no llama a direcciones arbitrarias. */
 export const isDiscordWebhook = (url: string) =>
   /^https:\/\/(discord|discordapp)\.com\/api\/webhooks\/\d+\/[\w-]+$/.test(url);
 
-/** Publica un aviso en el canal de Discord configurado. Nunca hace fallar al que llama. */
-export async function announce(db: D1, text: string, image?: ArrayBuffer | null): Promise<void> {
+/** Publica un aviso en el canal de Discord de la sala. Nunca hace fallar al que llama. */
+export async function announce(db: D1, room: Room | null, text: string, image?: ArrayBuffer | null): Promise<void> {
   try {
-    const url = await getSetting(db, 'discord');
+    const url = room?.discord;
     if (!url || !isDiscordWebhook(url)) return;
     const payload = { username: 'WabGBA', content: text.slice(0, 1900) };
     if (image) {
@@ -193,6 +301,10 @@ export async function announce(db: D1, text: string, image?: ArrayBuffer | null)
     /* Discord caído o webhook borrado: el evento queda igual en el sitio */
   }
 }
+
+/** Parte de una consulta que deja sólo los eventos de una sala (por la ROM de su clave). */
+export const EVENT_IN_ROOM =
+  "substr(e.key, 1, instr(e.key, ':') - 1) IN (SELECT rom_id FROM room_roms WHERE room_id = ?)";
 
 /** Anota un evento. Devuelve false si ya estaba (misma cuenta y misma clave). */
 export async function addEvent(

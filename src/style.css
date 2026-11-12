@@ -1772,3 +1772,76 @@ button.link.dark:hover {
 #btn-export {
   justify-self: start;
 }
+
+/* ---------- Salas ---------- */
+
+#room-select {
+  font-family: var(--pixel);
+  font-size: 8px;
+  color: var(--ink);
+  background: var(--paper);
+  border: 3px solid var(--ink);
+  border-radius: 8px;
+  padding: 7px 6px;
+  max-width: 150px;
+  box-shadow: 0 3px 0 #110e30;
+}
+
+#rooms-list {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.room-row {
+  display: grid;
+  gap: 6px;
+  background: #fff;
+  border: 3px solid var(--ink);
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+
+.room-row.on {
+  background: #fff8d6;
+}
+
+.room-row .room-name {
+  background: none;
+  border: none;
+  padding: 0;
+  text-align: left;
+  font-weight: 700;
+  font-size: 19px;
+  color: var(--ink);
+}
+
+.room-row small {
+  color: #5d5880;
+  font-size: 15px;
+}
+
+.room-row .row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.room-row .row input {
+  flex: 1;
+  min-width: 0;
+  font-size: 15px;
+  padding: 6px 8px;
+}
+
+#room-create {
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 3px dotted var(--paper-2);
+}
+
+#rooms-status {
+  min-height: 1.3em;
+  font-weight: 600;
+  color: var(--ink);
+}

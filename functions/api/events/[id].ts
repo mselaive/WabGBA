@@ -2,9 +2,21 @@
 //
 //   GET    /api/events/<id>             -> la captura (PNG), si tiene
 //   POST   /api/events/<id> { reason }  -> el dueño pide que se anule (queda en revisión)
-//   PUT    /api/events/<id>             -> quien administra rechaza el pedido
-//   DELETE /api/events/<id>             -> quien administra lo anula (con o sin pedido)
-import { announce, currentUser, database, json, readBody, type Context } from '../../../server/lib';
+//   PUT    /api/events/<id>             -> el líder de la sala rechaza el pedido
+//   DELETE /api/events/<id>             -> el líder de la sala lo anula (con o sin pedido)
+//
+// "Líder" incluye siempre a quien administra el sitio.
+import {
+  announce,
+  canEnter,
+  canModerate,
+  currentUser,
+  database,
+  json,
+  readBody,
+  roomOfGame,
+  type Context,
+} from '../../../server/lib';
 
 export async function onRequest({ request, env, params }: Context): Promise<Response> {
   const db = await database(env);
@@ -15,6 +27,18 @@ export async function onRequest({ request, env, params }: Context): Promise<Resp
   const id = Number(params.id);
   if (!Number.isInteger(id) || id < 1) return json({ error: 'bad-name' }, 400);
 
+  const event = await db
+    .prepare(
+      'SELECT e.user_id AS user_id, e.key AS key, u.username AS username, (e.image IS NOT NULL) AS has_image ' +
+        'FROM events e LEFT JOIN users u ON u.id = e.user_id WHERE e.id = ?',
+    )
+    .bind(id)
+    .first<{ user_id: number; key: string; username: string | null; has_image: number }>();
+  if (!event) return json({ error: 'not-found' }, 404);
+  // La sala del evento sale de la ROM con la que empieza su clave.
+  const room = await roomOfGame(db, event.key.split(':')[0]);
+  if (!room || !(await canEnter(db, user, room))) return json({ error: 'not-found' }, 404);
+
   if (request.method === 'GET') {
     const row = await db.prepare('SELECT image FROM events WHERE id = ?').bind(id).first<{ image: ArrayBuffer | number[] | null }>();
     if (!row?.image) return json({ error: 'not-found' }, 404);
@@ -22,12 +46,6 @@ export async function onRequest({ request, env, params }: Context): Promise<Resp
       headers: { 'Content-Type': 'image/png', 'Cache-Control': 'private, max-age=31536000' },
     });
   }
-
-  const event = await db
-    .prepare('SELECT e.user_id AS user_id, u.username AS username FROM events e LEFT JOIN users u ON u.id = e.user_id WHERE e.id = ?')
-    .bind(id)
-    .first<{ user_id: number; username: string | null }>();
-  if (!event) return json({ error: 'not-found' }, 404);
 
   if (request.method === 'POST') {
     // Sólo se puede reclamar lo propio, y una sola vez.
@@ -39,15 +57,15 @@ export async function onRequest({ request, env, params }: Context): Promise<Resp
       .prepare("INSERT INTO appeals (event_id, user_id, reason, status, created_at) VALUES (?, ?, ?, 'pending', ?)")
       .bind(id, user.id, reason, Date.now())
       .run();
-    await announce(db, `🙋 **${user.username}** pide anular un evento${reason ? `: “${reason}”` : ''}. Lo decide quien administra.`);
+    await announce(db, room, `🙋 **${user.username}** pide anular un evento${reason ? `: “${reason}”` : ''}. Lo decide el líder de la sala.`);
     return json({ ok: true });
   }
 
-  if (!user.admin) return json({ error: 'forbidden' }, 403);
+  if (!canModerate(user, room)) return json({ error: 'forbidden' }, 403);
 
   if (request.method === 'PUT') {
     await db.prepare("UPDATE appeals SET status = 'rejected' WHERE event_id = ?").bind(id).run();
-    await announce(db, `🚫 Pedido de anulación de **${event.username ?? '?'}** rechazado. La baja se queda.`);
+    await announce(db, room, `🚫 Pedido de anulación de **${event.username ?? '?'}** rechazado. La baja se queda.`);
     return json({ ok: true });
   }
 
@@ -57,7 +75,7 @@ export async function onRequest({ request, env, params }: Context): Promise<Resp
       db.prepare('DELETE FROM appeals WHERE event_id = ?').bind(id),
       db.prepare('DELETE FROM events WHERE id = ?').bind(id),
     ]);
-    if (appeal) await announce(db, `✅ Pedido de anulación de **${event.username ?? '?'}** aprobado.`);
+    if (appeal) await announce(db, room, `✅ Pedido de anulación de **${event.username ?? '?'}** aprobado.`);
     return json({ ok: true });
   }
 

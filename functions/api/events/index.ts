@@ -1,8 +1,21 @@
-// El historial de las partidas.
+// El historial de una sala.
 //
-//   GET  /api/events  -> { events: [{ id, username, type, at, data, image }], lives }
-//   POST /api/events  -> anota una muerte: { game, mon, enemy, poisoned, badges, image }
-import { addEvent, announce, currentUser, database, getLives, json, readBody, type Context } from '../../../server/lib';
+//   GET  /api/events?room=<id>  -> { events: [{ id, username, type, at, data, image, appeal }], lives }
+//   POST /api/events            -> anota una muerte: { game, mon, enemy, poisoned, badges, image }
+//                                  (la sala sale de la ROM, no de lo que diga el cliente)
+import {
+  EVENT_IN_ROOM,
+  addEvent,
+  announce,
+  canEnter,
+  currentUser,
+  database,
+  json,
+  readBody,
+  requestedRoom,
+  roomOfGame,
+  type Context,
+} from '../../../server/lib';
 import { speciesName } from '../../../src/species';
 
 interface Row {
@@ -43,13 +56,16 @@ export async function onRequest({ request, env }: Context): Promise<Response> {
   if (!user) return json({ error: 'unauthorized' }, 401);
 
   if (request.method === 'GET') {
+    const room = await requestedRoom(db, request, user);
+    if (!room) return json({ error: 'no-room' }, 404);
     const { results } = await db
       .prepare(
         'SELECT e.id AS id, u.username AS username, e.type AS type, e.created_at AS created_at, e.data AS data, ' +
           '(e.image IS NOT NULL) AS has_image, a.status AS appeal_status, a.reason AS appeal_reason ' +
           'FROM events e LEFT JOIN users u ON u.id = e.user_id LEFT JOIN appeals a ON a.event_id = e.id ' +
-          'ORDER BY e.id DESC LIMIT 150',
+          `WHERE ${EVENT_IN_ROOM} ORDER BY e.id DESC LIMIT 150`,
       )
+      .bind(room.id)
       .all<Row>();
     const events = results.map((r) => {
       let data: unknown = {};
@@ -68,7 +84,7 @@ export async function onRequest({ request, env }: Context): Promise<Response> {
         appeal: r.appeal_status ? { status: r.appeal_status, reason: r.appeal_reason ?? '' } : null,
       };
     });
-    return json({ events, lives: await getLives(db) });
+    return json({ events, lives: room.lives });
   }
 
   if (request.method === 'POST') {
@@ -82,6 +98,9 @@ export async function onRequest({ request, env }: Context): Promise<Response> {
     if (!/^[A-Za-z0-9_-]{1,40}$/.test(game) || !/^[0-9a-f]{16}$/.test(key) || !species || !level) {
       return json({ error: 'invalid' }, 400);
     }
+    // Las bajas sólo cuentan en juegos de una sala en la que esté la cuenta.
+    const room = await roomOfGame(db, game);
+    if (!room || !(await canEnter(db, user, room))) return json({ error: 'no-room' }, 404);
 
     const data = {
       game,
@@ -100,10 +119,10 @@ export async function onRequest({ request, env }: Context): Promise<Response> {
     if (!added) return json({ ok: true, duplicate: true });
 
     const deaths = await db
-      .prepare("SELECT COUNT(*) AS n FROM events WHERE user_id = ? AND type = 'death'")
-      .bind(user.id)
+      .prepare(`SELECT COUNT(*) AS n FROM events e WHERE e.user_id = ? AND e.type = 'death' AND ${EVENT_IN_ROOM}`)
+      .bind(user.id, room.id)
       .first<{ n: number }>();
-    const left = (await getLives(db)) - (deaths?.n ?? 0);
+    const left = room.lives - (deaths?.n ?? 0);
 
     const name = speciesName(species);
     const who =
@@ -114,7 +133,7 @@ export async function onRequest({ request, env }: Context): Promise<Response> {
       ? ` contra un ${speciesName(data.enemy.species!)}${data.enemy.wild ? ' salvaje' : ''} nv ${data.enemy.level}`
       : '';
     const closing = left > 0 ? `Le quedan ${left} ${left === 1 ? 'vida' : 'vidas'}.` : '☠️ **Se quedó sin vidas.**';
-    await announce(db, `💀 **${user.username}** perdió a ${who}${versus}. ${closing}`, image);
+    await announce(db, room, `💀 **${user.username}** perdió a ${who}${versus}. ${closing}`, image);
     return json({ ok: true, left });
   }
 

@@ -4,9 +4,13 @@ Emulador de Game Boy Advance en el navegador, de uso personal. Corre sobre
 [mGBA](https://mgba.io) compilado a WebAssembly
 ([@thenick775/mgba-wasm](https://www.npmjs.com/package/@thenick775/mgba-wasm)).
 
-- **Biblioteca del sitio.** Sólo la cuenta administradora (la primera que se crea) sube
-  ROMs; los demás participantes ven esos cartuchos y los descargan a su navegador, sin poder
-  cargar otros. Así todos juegan exactamente la misma ROM. El repo no incluye ningún juego.
+- **Salas.** Cada sala es un grupo aparte: su código de invitación, sus ROMs, su historial,
+  sus vidas, sus torneos y su canal de Discord. Quien administra el sitio (la primera cuenta
+  que se crea) las crea, está en todas y nombra al líder de cada una; el líder decide las
+  reglas y las anulaciones de su sala. Una cuenta puede estar en varias salas.
+- **Biblioteca por sala.** Sólo quien administra el sitio sube ROMs, y cada ROM va a una sola
+  sala; sus participantes la ven y la descargan a su navegador, sin poder cargar otras. Así
+  todos juegan exactamente la misma ROM. El repo no incluye ningún juego.
 - **Se guarda como en la consola.** Lo único que cuenta es guardar dentro del juego: no hay
   estados, ni rebobinado, ni forma de cargar una partida vieja. Pensado para un randomlocke.
 - **Seguís donde lo dejaste.** Al cerrar la pestaña queda un punto de reanudación en ese
@@ -81,7 +85,8 @@ El emulador usa hilos, así que la página tiene que servirse con las cabeceras
 5. **Deployments → Retry deployment**, para que tome los cambios.
 6. En el sitio: **Crear una cuenta**, con usuario, contraseña y el código de invitación.
    **La primera cuenta que se crea es la administradora**: creá la tuya antes de pasarle el
-   código a nadie.
+   código a nadie. Ese `INVITE_CODE` queda como código de la primera sala; las demás salas,
+   con sus códigos, se crean desde ⚙ Ajustes.
 7. Con esa cuenta: **+ AGREGAR ROM**. Se sube a la biblioteca y la ven todos.
 
 Sin `INVITE_CODE` nadie puede registrarse. Las contraseñas se guardan con hash (PBKDF2),
