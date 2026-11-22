@@ -8,7 +8,9 @@ import { chunkStore, currentUser, database, json, readBody, roomById, roomOfGame
 
 /** Tope por ROM: un cartucho de GBA llega a 32 MB; uno de DS, a 512 MB (los de Pokémon pesan 128). */
 const MAX_BYTES = { gba: 34 * 1024 * 1024, nds: 260 * 1024 * 1024 };
-const CHUNK_BYTES = 1024 * 1024;
+// Los trozos de DS son más chicos: son cientos de pedidos seguidos y cada uno tiene que
+// entrar holgado en el tiempo de cómputo del plan gratuito.
+const CHUNK_BYTES = { gba: 1024 * 1024, nds: 256 * 1024 };
 
 export async function onRequest({ request, env, params }: Context): Promise<Response> {
   const db = await database(env);
@@ -27,7 +29,7 @@ export async function onRequest({ request, env, params }: Context): Promise<Resp
     const chunks = Number(body.chunks);
     const console = body.console === 'nds' ? 'nds' : 'gba';
     if (!title || !Number.isInteger(size) || size <= 0 || size > MAX_BYTES[console]) return json({ error: 'bad-size' }, 413);
-    if (chunks !== Math.ceil(size / CHUNK_BYTES)) return json({ error: 'invalid' }, 400);
+    if (chunks !== Math.ceil(size / CHUNK_BYTES[console])) return json({ error: 'invalid' }, 400);
     const room = await roomById(db, Number(body.room));
     if (!room) return json({ error: 'no-room' }, 404);
     // Una ROM vive en una sola sala: ahí van sus partidas, sus bajas y su ranking.

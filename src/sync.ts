@@ -155,6 +155,8 @@ export interface RomInfo {
 }
 
 export const CHUNK_BYTES = 1024 * 1024;
+/** Las ROMs de DS van en trozos más chicos: son cientos de pedidos y cada uno tiene que ser liviano para el servidor. */
+const NDS_CHUNK_BYTES = 256 * 1024;
 
 /** Errores que el servidor nombra tal cual y que tienen su propio mensaje. */
 const NAMED: SyncErrorKind[] = [
@@ -262,17 +264,28 @@ async function steady(path: string, init?: () => RequestInit): Promise<Response>
 }
 
 export async function downloadRom(rom: RomInfo, onProgress: (done: number, total: number) => void): Promise<Uint8Array> {
+  // Los trozos se piden de a varios a la vez y se arman en orden al final.
+  const parts: Uint8Array[] = new Array(rom.chunks);
+  let next = 0;
+  let done = 0;
+  const worker = async () => {
+    while (next < rom.chunks) {
+      const n = next++;
+      const res = await steady(`roms/${encodeURIComponent(rom.id)}/${n}`);
+      if (res.status === 401) throw new SyncError('auth');
+      if (!res.ok || isJson(res)) throw new SyncError('server');
+      parts[n] = new Uint8Array(await res.arrayBuffer());
+      onProgress(++done, rom.chunks);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(4, rom.chunks) }, worker));
+
   const data = new Uint8Array(rom.size);
   let offset = 0;
-  for (let n = 0; n < rom.chunks; n++) {
-    const res = await steady(`roms/${encodeURIComponent(rom.id)}/${n}`);
-    if (res.status === 401) throw new SyncError('auth');
-    if (!res.ok || isJson(res)) throw new SyncError('server');
-    const chunk = new Uint8Array(await res.arrayBuffer());
-    if (offset + chunk.length > rom.size) throw new SyncError('server');
-    data.set(chunk, offset);
-    offset += chunk.length;
-    onProgress(n + 1, rom.chunks);
+  for (const part of parts) {
+    if (offset + part.length > rom.size) throw new SyncError('server');
+    data.set(part, offset);
+    offset += part.length;
   }
   if (offset !== rom.size) throw new SyncError('server');
   return data;
@@ -287,7 +300,8 @@ export async function uploadRom(
   console: 'gba' | 'nds' = 'gba',
 ): Promise<void> {
   const size = data instanceof Blob ? data.size : data.length;
-  const chunks = Math.ceil(size / CHUNK_BYTES);
+  const step = console === 'nds' ? NDS_CHUNK_BYTES : CHUNK_BYTES;
+  const chunks = Math.ceil(size / step);
   const path = `roms/${encodeURIComponent(id)}`;
   const begun = await okJson(
     await steady(path, () => ({
@@ -304,7 +318,7 @@ export async function uploadRom(
         await steady(`${path}/${n}`, () => ({
           method: 'PUT',
           headers: { 'Content-Type': 'application/octet-stream' },
-          body: data.slice(n * CHUNK_BYTES, (n + 1) * CHUNK_BYTES),
+          body: data.slice(n * step, (n + 1) * step),
         })),
       );
     }
