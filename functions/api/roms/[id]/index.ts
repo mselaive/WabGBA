@@ -10,7 +10,7 @@ import { chunkStore, currentUser, database, json, readBody, roomById, roomOfGame
 const MAX_BYTES = { gba: 34 * 1024 * 1024, nds: 260 * 1024 * 1024 };
 // Los trozos de DS son más chicos: son cientos de pedidos seguidos y cada uno tiene que
 // entrar holgado en el tiempo de cómputo del plan gratuito.
-const CHUNK_BYTES = { gba: 1024 * 1024, nds: 256 * 1024 };
+const CHUNK_BYTES = { gba: 1024 * 1024, nds: 512 * 1024 };
 
 export async function onRequest({ request, env, params }: Context): Promise<Response> {
   const db = await database(env);

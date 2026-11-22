@@ -156,7 +156,22 @@ export interface RomInfo {
 
 export const CHUNK_BYTES = 1024 * 1024;
 /** Las ROMs de DS van en trozos más chicos: son cientos de pedidos y cada uno tiene que ser liviano para el servidor. */
-const NDS_CHUNK_BYTES = 256 * 1024;
+const NDS_CHUNK_BYTES = 512 * 1024;
+
+// Los trozos de DS viajan como texto (base64): al servidor gratuito le cuesta mucho menos
+// guardar un texto que una tira de bytes.
+function toBase64(bytes: Uint8Array): string {
+  let bin = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  return btoa(bin);
+}
+
+function fromBase64(text: string): Uint8Array {
+  const bin = atob(text);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return bytes;
+}
 
 /** Errores que el servidor nombra tal cual y que tienen su propio mensaje. */
 const NAMED: SyncErrorKind[] = [
@@ -274,7 +289,8 @@ export async function downloadRom(rom: RomInfo, onProgress: (done: number, total
       const res = await steady(`roms/${encodeURIComponent(rom.id)}/${n}`);
       if (res.status === 401) throw new SyncError('auth');
       if (!res.ok || isJson(res)) throw new SyncError('server');
-      parts[n] = new Uint8Array(await res.arrayBuffer());
+      const asText = (res.headers.get('Content-Type') ?? '').startsWith('text/plain');
+      parts[n] = asText ? fromBase64(await res.text()) : new Uint8Array(await res.arrayBuffer());
       onProgress(++done, rom.chunks);
     }
   };
@@ -314,11 +330,16 @@ export async function uploadRom(
   const have = new Set(((await begun.json()) as { have?: number[] }).have ?? []);
   for (let n = 0; n < chunks; n++) {
     if (!have.has(n)) {
+      const piece = data.slice(n * step, (n + 1) * step);
+      const text =
+        console === 'nds'
+          ? toBase64(piece instanceof Blob ? new Uint8Array(await piece.arrayBuffer()) : piece)
+          : null;
       await okJson(
         await steady(`${path}/${n}`, () => ({
           method: 'PUT',
-          headers: { 'Content-Type': 'application/octet-stream' },
-          body: data.slice(n * step, (n + 1) * step),
+          headers: { 'Content-Type': text === null ? 'application/octet-stream' : 'text/plain' },
+          body: text ?? piece,
         })),
       );
     }
