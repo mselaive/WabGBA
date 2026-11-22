@@ -1845,3 +1845,46 @@ button.link.dark:hover {
   font-weight: 600;
   color: var(--ink);
 }
+
+/* ---------- Nintendo DS ---------- */
+
+#nds-stage {
+  position: fixed;
+  inset: 0;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  background: #000;
+}
+
+#nds-stage[hidden] {
+  display: none;
+}
+
+#nds-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 10px;
+  background: #1a1440;
+  color: #fff;
+}
+
+#nds-title {
+  font-size: 15px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#nds-host {
+  flex: 1;
+  min-height: 0;
+}
+
+#nds-host iframe {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: 0;
+}

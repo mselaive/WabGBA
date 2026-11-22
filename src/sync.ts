@@ -150,6 +150,8 @@ export interface RomInfo {
   title: string;
   size: number;
   chunks: number;
+  /** De qué consola es. Las de antes de que hubiera DS no lo traen: son de GBA. */
+  console?: 'gba' | 'nds';
 }
 
 export const CHUNK_BYTES = 1024 * 1024;
@@ -263,16 +265,18 @@ export async function downloadRom(rom: RomInfo, onProgress: (done: number, total
 export async function uploadRom(
   id: string,
   title: string,
-  data: Uint8Array,
+  data: Uint8Array | Blob,
   onProgress: (done: number, total: number) => void,
+  console: 'gba' | 'nds' = 'gba',
 ): Promise<void> {
-  const chunks = Math.ceil(data.length / CHUNK_BYTES);
+  const size = data instanceof Blob ? data.size : data.length;
+  const chunks = Math.ceil(size / CHUNK_BYTES);
   const path = `roms/${encodeURIComponent(id)}`;
   await okJson(
     await call(path, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ title, size: data.length, chunks, room: roomId }),
+      body: JSON.stringify({ title, size, chunks, room: roomId, console }),
     }),
   );
   for (let n = 0; n < chunks; n++) {

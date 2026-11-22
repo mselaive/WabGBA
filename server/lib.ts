@@ -13,6 +13,8 @@ export interface D1 {
 }
 export interface Env {
   DB?: D1;
+  /** Base aparte para los trozos de las ROMs de DS, que son mucho más grandes. */
+  DB_NDS?: D1;
   /** Código de la primera sala. Las demás salas y sus códigos viven en la base. */
   INVITE_CODE?: string;
 }
@@ -87,10 +89,34 @@ export async function database(env: Env): Promise<D1 | null> {
       // Una ROM pertenece a una sola sala; de ahí sale a qué sala va cada evento.
       env.DB.prepare('CREATE TABLE IF NOT EXISTS room_roms (rom_id TEXT PRIMARY KEY, room_id INTEGER NOT NULL)'),
     ]);
+    // De qué consola es cada ROM: las de antes de que existiera la columna son de GBA.
+    try {
+      await env.DB.prepare("ALTER TABLE roms ADD COLUMN console TEXT NOT NULL DEFAULT 'gba'").run();
+    } catch {
+      /* la columna ya estaba */
+    }
     await seedFirstRoom(env.DB, env.INVITE_CODE);
     ready = true;
   }
   return env.DB;
+}
+
+let ndsReady = false;
+
+/**
+ * Dónde van los trozos de una ROM según su consola. Las de DS pesan unos 128 MB y la base
+ * gratuita admite 500 MB, así que van a una base propia si está configurada.
+ */
+export async function chunkStore(env: Env, console: string): Promise<D1> {
+  if (console !== 'nds' || !env.DB_NDS) return env.DB!;
+  if (!ndsReady) {
+    await env.DB_NDS.prepare(
+      'CREATE TABLE IF NOT EXISTS rom_chunks (rom_id TEXT NOT NULL, n INTEGER NOT NULL, data BLOB NOT NULL, ' +
+        'PRIMARY KEY (rom_id, n))',
+    ).run();
+    ndsReady = true;
+  }
+  return env.DB_NDS;
 }
 
 /**

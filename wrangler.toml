@@ -10,3 +10,9 @@ compatibility_date = "2026-11-01"
 binding = "DB"
 database_name = "wabgba"
 database_id = "5c10a4eb-07a8-49b0-bed1-5af02edfee7e"
+
+# Los trozos de las ROMs de Nintendo DS (pesan ~128 MB cada una; el tope gratis es 500 MB por base).
+[[d1_databases]]
+binding = "DB_NDS"
+database_name = "wabgba-nds"
+database_id = "85ebc7b1-1f9d-4874-8de9-31bdf50737fa"

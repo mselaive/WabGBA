@@ -1,4 +1,4 @@
-// GET /api/roms?room=<id> -> { roms: [{ id, title, size, chunks }] }
+// GET /api/roms?room=<id> -> { roms: [{ id, title, size, chunks, console }] }
 // La biblioteca de una sala: las ROMs que le subió quien administra el sitio.
 import { currentUser, database, json, requestedRoom, type Context } from '../../../server/lib';
 
@@ -12,10 +12,10 @@ export async function onRequestGet({ request, env }: Context): Promise<Response>
 
   const { results } = await db
     .prepare(
-      'SELECT r.id AS id, r.title AS title, r.size AS size, r.chunks AS chunks FROM roms r ' +
+      'SELECT r.id AS id, r.title AS title, r.size AS size, r.chunks AS chunks, r.console AS console FROM roms r ' +
         'JOIN room_roms rr ON rr.rom_id = r.id WHERE rr.room_id = ? AND r.ready = 1 ORDER BY r.created_at',
     )
     .bind(room.id)
-    .all<{ id: string; title: string; size: number; chunks: number }>();
+    .all<{ id: string; title: string; size: number; chunks: number; console: string }>();
   return json({ roms: results });
 }

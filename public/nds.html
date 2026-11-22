@@ -1,0 +1,120 @@
+<!doctype html>
+<!--
+  El juego de Nintendo DS corre acá adentro, en un marco aparte: al cerrarlo se libera toda
+  la memoria del emulador. La página de afuera deja en `parent.__ndsBoot` la ROM, la partida
+  y los avisos que quiere recibir.
+-->
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no" />
+    <title>Nintendo DS</title>
+    <style>
+      html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+      #game { width: 100%; height: 100%; }
+    </style>
+  </head>
+  <body>
+    <div id="game"></div>
+    <script>
+      const boot = parent.__ndsBoot;
+      const SAVE_DIR = '/data/saves/DeSmuME 2015';
+
+      window.EJS_player = '#game';
+      window.EJS_core = 'desmume2015';
+      // El archivo se arma acá adentro: el emulador sólo reconoce los creados en su propia página.
+      // Su nombre decide cómo se llama la partida.
+      window.EJS_gameUrl = new File([boot.rom], boot.name + '.nds');
+      window.EJS_gameName = boot.name;
+      window.EJS_pathtodata = '/ejs/';
+      window.EJS_DEBUG_XX = true; // el paquete trae las fuentes sin minificar
+      window.EJS_language = 'es-ES';
+      window.EJS_threads = false;
+      window.EJS_color = '#3b2f8f';
+      window.EJS_backgroundColor = '#000';
+      // Se arranca con un toque acá adentro: sin eso, el iPhone deja el juego sin sonido.
+      window.EJS_startOnLoaded = false;
+      window.EJS_startButtonName = '▶ JUGAR';
+      window.EJS_volume = boot.muted ? 0 : 0.7;
+      window.EJS_defaultOptions = {
+        desmume_screens_layout: boot.layout,
+        desmume_firmware_language: 'Spanish',
+        'save-save-interval': '0',
+      };
+      // Randomlocke: nada de estados de guardado, rebobinado ni trucos. Sólo se guarda
+      // dentro del juego.
+      window.EJS_Buttons = {
+        playPause: true,
+        restart: false,
+        mute: true,
+        volume: true,
+        settings: true,
+        fullscreen: true,
+        gamepad: true,
+        saveState: false,
+        loadState: false,
+        quickSave: false,
+        quickLoad: false,
+        screenRecord: false,
+        screenshot: false,
+        cheat: false,
+        saveSavFiles: false,
+        loadSavFiles: false,
+        cacheManager: false,
+        exitEmulation: false,
+        netplay: false,
+        contextMenu: false,
+        rightClick: false,
+      };
+      window.EJS_hideSettings = [
+        'retroarch_core',
+        'ejs_threads',
+        'rewindEnabled',
+        'rewind-granularity',
+        'slowMotion',
+        'sm-ratio',
+        'save-state-slot',
+        'save-state-location',
+        'save-save-interval',
+        'screenshotSource',
+        'screenshotFormat',
+        'screenshotUpscale',
+        'screenRecordFPS',
+        'screenRecordFormat',
+        'screenRecordUpscale',
+        'screenRecordVideoBitrate',
+        'screenRecordAudioBitrate',
+      ];
+
+      window.EJS_ready = () => {
+        const emu = window.EJS_emulator;
+        // Sin teclas para guardar o cargar estados.
+        for (const set of [emu.defaultControllers, emu.controls]) {
+          if (!set || !set[0]) continue;
+          for (const k of [24, 25, 26, 28]) set[0][k] = {};
+        }
+        // La partida la maneja la página de afuera: acá se pone la suya (o ninguna) antes
+        // de que el juego la lea.
+        emu.on('saveDatabaseLoaded', (FS) => {
+          try {
+            FS.mkdir(SAVE_DIR);
+          } catch (e) {
+            /* ya existía */
+          }
+          for (const name of FS.readdir(SAVE_DIR)) {
+            if (name !== '.' && name !== '..') FS.unlink(SAVE_DIR + '/' + name);
+          }
+          if (boot.save) FS.writeFile(SAVE_DIR + '/' + boot.name + '.dsv', boot.save);
+        });
+      };
+      window.EJS_onGameStart = () => {
+        const gm = window.EJS_emulator.gameManager;
+        gm.quickSave = () => false;
+        gm.quickLoad = () => {};
+        gm.loadState = () => {};
+        boot.onStart(gm.getSaveFilePath());
+      };
+    </script>
+    <script src="/ejs/loader.js"></script>
+  </body>
+</html>

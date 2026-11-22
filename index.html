@@ -40,6 +40,15 @@
     </div>
 
     <!-- El menú -->
+    <!-- Nintendo DS: el juego corre en un marco aparte que ocupa toda la pantalla. -->
+    <div id="nds-stage" hidden>
+      <div id="nds-bar">
+        <button id="nds-menu" class="px-btn" title="Menú: juegos, historial, logros y participantes">☰ MENÚ</button>
+        <span id="nds-title"></span>
+      </div>
+      <div id="nds-host"></div>
+    </div>
+
     <div id="hub" class="scene">
       <header id="hub-head">
         <div class="logo" aria-label="WabGBA"><span>W</span><span>a</span><span>b</span><span class="alt">G</span><span class="alt">B</span><span class="alt">A</span></div>
@@ -175,7 +184,7 @@
       <div><small></small><b></b></div>
     </div>
 
-    <input id="file-rom" type="file" accept=".gba,.gbc,.gb" hidden />
+    <input id="file-rom" type="file" accept=".gba,.gbc,.gb,.nds" hidden />
     <div id="toast"></div>
 
     <script type="module" src="/src/main.ts"></script>

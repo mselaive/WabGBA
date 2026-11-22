@@ -10,3 +10,7 @@ dist/
 *.sav
 *.ss*
 /roms/
+
+roms
+# El emulador de DS se copia desde node_modules al compilar
+/public/ejs/

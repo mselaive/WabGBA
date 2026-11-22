@@ -1,12 +1,12 @@
 // Alta y baja de una ROM en la biblioteca de una sala. Sólo quien administra el sitio.
 //
-//   PUT    /api/roms/<id> { title, size, chunks, room }  -> empieza la subida (borra lo que hubiera)
+//   PUT    /api/roms/<id> { title, size, chunks, room, console }  -> empieza la subida (borra lo que hubiera)
 //   POST   /api/roms/<id>                                -> la publica, si llegaron todos los trozos
 //   DELETE /api/roms/<id>                                -> la quita
-import { currentUser, database, json, readBody, roomById, roomOfGame, type Context } from '../../../../server/lib';
+import { chunkStore, currentUser, database, json, readBody, roomById, roomOfGame, type Context } from '../../../../server/lib';
 
-/** Tope por ROM: un cartucho de GBA llega a 32 MB. */
-const MAX_BYTES = 34 * 1024 * 1024;
+/** Tope por ROM: un cartucho de GBA llega a 32 MB; uno de DS, a 512 MB (los de Pokémon pesan 128). */
+const MAX_BYTES = { gba: 34 * 1024 * 1024, nds: 260 * 1024 * 1024 };
 const CHUNK_BYTES = 1024 * 1024;
 
 export async function onRequest({ request, env, params }: Context): Promise<Response> {
@@ -24,7 +24,8 @@ export async function onRequest({ request, env, params }: Context): Promise<Resp
     const title = String(body.title ?? '').trim().slice(0, 60);
     const size = Number(body.size);
     const chunks = Number(body.chunks);
-    if (!title || !Number.isInteger(size) || size <= 0 || size > MAX_BYTES) return json({ error: 'bad-size' }, 413);
+    const console = body.console === 'nds' ? 'nds' : 'gba';
+    if (!title || !Number.isInteger(size) || size <= 0 || size > MAX_BYTES[console]) return json({ error: 'bad-size' }, 413);
     if (chunks !== Math.ceil(size / CHUNK_BYTES)) return json({ error: 'invalid' }, 400);
     const room = await roomById(db, Number(body.room));
     if (!room) return json({ error: 'no-room' }, 404);
@@ -32,23 +33,27 @@ export async function onRequest({ request, env, params }: Context): Promise<Resp
     const owner = await roomOfGame(db, id);
     if (owner && owner.id !== room.id) return json({ error: 'rom-elsewhere', room: owner.name }, 409);
 
+    await (await chunkStore(env, console)).prepare('DELETE FROM rom_chunks WHERE rom_id = ?').bind(id).run();
     await db.batch([
       db.prepare('DELETE FROM rom_chunks WHERE rom_id = ?').bind(id),
       db
         .prepare(
-          'INSERT INTO roms (id, title, size, chunks, ready, created_at) VALUES (?1, ?2, ?3, ?4, 0, ?5) ' +
-            'ON CONFLICT(id) DO UPDATE SET title = ?2, size = ?3, chunks = ?4, ready = 0',
+          'INSERT INTO roms (id, title, size, chunks, ready, created_at, console) VALUES (?1, ?2, ?3, ?4, 0, ?5, ?6) ' +
+            'ON CONFLICT(id) DO UPDATE SET title = ?2, size = ?3, chunks = ?4, ready = 0, console = ?6',
         )
-        .bind(id, title, size, chunks, Date.now()),
+        .bind(id, title, size, chunks, Date.now(), console),
       db.prepare('INSERT OR REPLACE INTO room_roms (rom_id, room_id) VALUES (?, ?)').bind(id, room.id),
     ]);
     return json({ ok: true });
   }
 
   if (request.method === 'POST') {
-    const rom = await db.prepare('SELECT chunks FROM roms WHERE id = ?').bind(id).first<{ chunks: number }>();
+    const rom = await db
+      .prepare('SELECT chunks, console FROM roms WHERE id = ?')
+      .bind(id)
+      .first<{ chunks: number; console: string }>();
     if (!rom) return json({ error: 'not-found' }, 404);
-    const have = await db
+    const have = await (await chunkStore(env, rom.console))
       .prepare('SELECT COUNT(*) AS n FROM rom_chunks WHERE rom_id = ?')
       .bind(id)
       .first<{ n: number }>();
@@ -58,6 +63,7 @@ export async function onRequest({ request, env, params }: Context): Promise<Resp
   }
 
   if (request.method === 'DELETE') {
+    await (await chunkStore(env, 'nds')).prepare('DELETE FROM rom_chunks WHERE rom_id = ?').bind(id).run();
     await db.batch([
       db.prepare('DELETE FROM rom_chunks WHERE rom_id = ?').bind(id),
       db.prepare('DELETE FROM roms WHERE id = ?').bind(id),

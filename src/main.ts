@@ -16,6 +16,7 @@ import {
 } from './achievements';
 import * as controls from './controls';
 import { findParty, readEnemies, readParty, readState, type Mon } from './party';
+import * as nds from './nds';
 import { placeName } from './places';
 import { readSave, readSavedMons, type Progress, type SaveResult } from './save';
 import { setSfx, sfx } from './sfx';
@@ -166,6 +167,10 @@ function hideLogin() {
 
 /** Cierra el juego en curso dejando todo guardado en el dispositivo. */
 async function stopGame() {
+  if (ndsSession) {
+    await stopNds();
+    return;
+  }
   if (!running) return;
   emu.forceAutoSaveState();
   emu.quitGame();
@@ -790,6 +795,7 @@ let tab: Tab = 'play';
 
 function setHub(open: boolean) {
   hub.hidden = !open;
+  ndsSession?.setPaused(open);
   if (running) {
     if (open) emu.pauseGame();
     else if (!paused) emu.resumeGame();
@@ -808,7 +814,7 @@ async function openHub() {
 }
 
 function closeHub() {
-  if (!running) return;
+  if (!running && !ndsSession) return;
   sfx('back');
   setHub(false);
 }
@@ -929,6 +935,7 @@ function linkFile(id: string, name: string) {
 }
 
 function fileFor(rom: sync.RomInfo): string | null {
+  if (rom.console === 'nds') return ndsLocal.has(rom.id) ? NDS_PREFIX + rom.id : null;
   const names = romNames();
   const linked = fileMap()[rom.id];
   if (linked && names.includes(linked)) return linked;
@@ -970,6 +977,14 @@ async function downloadAndStart(rom: sync.RomInfo) {
     const data = await sync.downloadRom(rom, (done, total) => {
       $('textbox-text').textContent = `Descargando ${rom.title}… ${Math.round((done / total) * 100)}%`;
     });
+    if (rom.console === 'nds') {
+      await nds.putRom(rom.id, new Blob([data as Uint8Array<ArrayBuffer>]));
+      ndsLocal.add(rom.id);
+      void navigator.storage?.persist?.();
+      busy = false;
+      await startNds(rom);
+      return;
+    }
     const name = `${rom.id}.gba`;
     emu.FS.writeFile(`${emu.filePaths().gamePath}/${name}`, data);
     linkFile(rom.id, name);
@@ -1035,11 +1050,11 @@ function carts(): Cart[] {
 function renderPlay() {
   if (shared() && !catalogLoaded) void loadCatalog();
   const list = carts();
-  const current = running ? activeRom() : null;
+  const current = ndsSession ? NDS_PREFIX + ndsSession.id : running ? activeRom() : null;
   const last = activeRom();
-  $('btn-resume').hidden = !running;
+  $('btn-resume').hidden = !running && !ndsSession;
   $('btn-export').hidden = !running;
-  $('btn-reset').hidden = !last || (cloud && !username());
+  $('btn-reset').hidden = (!last && !ndsSession) || (cloud && !username());
 
   const nodes = list.map((c) => {
     const li = el('li', 'cart-wrap');
@@ -1052,6 +1067,7 @@ function renderPlay() {
     else if (c.file === last) cart.append(el('span', 'tag', 'ÚLTIMO'));
     cart.onclick = () => {
       if (playing) closeHub();
+      else if (c.file && c.rom && c.file.startsWith(NDS_PREFIX)) void startNds(c.rom);
       else if (c.file) void startGame(c.file);
       else if (c.rom) void downloadAndStart(c.rom);
     };
@@ -1071,8 +1087,14 @@ function renderPlay() {
           }
           if (c.file) {
             if (playing) await stopGame();
-            dropFile(`${emu.filePaths().gamePath}/${c.file}`);
-            await persist();
+            if (c.file.startsWith(NDS_PREFIX)) {
+              const id = c.file.slice(NDS_PREFIX.length);
+              await nds.dropRom(id);
+              ndsLocal.delete(id);
+            } else {
+              dropFile(`${emu.filePaths().gamePath}/${c.file}`);
+              await persist();
+            }
           }
           renderHub();
         } catch (e) {
@@ -1106,7 +1128,7 @@ function renderPlay() {
 
   if (busy) return;
   say(
-    running
+    running || ndsSession
       ? 'El juego está en pausa. Volvé cuando quieras.'
       : cloud && !username()
         ? 'Entrá con tu cuenta para ver los juegos.'
@@ -1709,6 +1731,10 @@ async function loadAccountData() {
 
 function addRom(file: File) {
   if (!canAdd()) return;
+  if (nds.isNdsFile(file.name)) {
+    void addNdsRom(file);
+    return;
+  }
   say('Guardando el cartucho en el navegador…');
   emu.uploadRom(file, async () => {
     await persist();
@@ -1719,6 +1745,212 @@ function addRom(file: File) {
     if (shared()) void publishRom(file.name);
     else void startGame(file.name);
   });
+}
+
+// ---------- Nintendo DS ----------
+// Los juegos de DS corren con otro emulador, en un marco aparte (ver nds.ts). Por ahora
+// tienen biblioteca, partida local y partida en la cuenta; los logros y el detector de
+// bajas todavía son sólo de GBA.
+
+const NDS_PREFIX = 'nds:';
+const ndsStage = $('nds-stage');
+let ndsSession: nds.Session | null = null;
+let ndsLocal = new Set<string>();
+
+/** Sube a la biblioteca una ROM de DS elegida del disco (cuenta administradora). */
+async function addNdsRom(file: File) {
+  if (!shared()) {
+    fail('Los juegos de Nintendo DS necesitan una cuenta: entrá primero.');
+    return;
+  }
+  if (busy) return;
+  busy = true;
+  try {
+    say('Leyendo el cartucho de DS…');
+    const id = await nds.romIdOf(file, stem(file.name));
+    await nds.putRom(id, file);
+    ndsLocal.add(id);
+    void navigator.storage?.persist?.();
+    const title = stem(file.name).slice(0, 60);
+    if (!catalog.some((r) => r.id === id)) {
+      await sync.uploadRom(
+        id,
+        title,
+        file,
+        (done, total) => {
+          $('textbox-text').textContent =
+            `Subiendo ${title}… ${Math.round((done / total) * 100)}% (es un juego grande: tarda unos minutos)`;
+        },
+        'nds',
+      );
+    }
+    catalog = await sync.listRoms();
+    localStorage.setItem(catalogKey(), JSON.stringify(catalog));
+    sfx('ok');
+    busy = false;
+    renderPlay();
+    say(`¡Listo! ${title} ya está en la biblioteca: lo ven todos los participantes.`);
+  } catch (e) {
+    onCloudError(e);
+  } finally {
+    busy = false;
+  }
+}
+
+/** Sube la partida de DS. Devuelve true si quedó sincronizada. */
+async function ndsUpload(id: string, data: Uint8Array, force: boolean): Promise<boolean> {
+  if (!username() || !nds.isRealSave(data)) return false;
+  const st = sync.getState(id);
+  sync.setState(id, { ...st, dirty: true });
+  try {
+    const res = await sync.upload(id, data, st.base, force);
+    if (res.ok) {
+      sync.setState(id, { base: res.savedAt, dirty: false });
+      return true;
+    }
+    toast('⚠ Tu cuenta tiene otra partida de este juego. Al volver a abrirlo vas a elegir cuál queda.');
+  } catch (e) {
+    toast(sync.describe(e));
+  }
+  return false;
+}
+
+/** El juego terminó de guardar: la partida queda en este navegador y en la cuenta. */
+async function onNdsSaved(id: string, data: Uint8Array) {
+  await nds.putSave(id, username(), data);
+  const synced = await ndsUpload(id, data, false);
+  toast(synced ? '☁ Partida guardada y sincronizada' : 'Partida guardada');
+  playersCache = null;
+  void loadFeed();
+}
+
+async function stopNds() {
+  const session = ndsSession;
+  if (!session) return;
+  ndsSession = null;
+  const final = session.stop();
+  ndsStage.hidden = true;
+  document.title = 'WabGBA';
+  // Si guardó justo antes de salir, puede que esa partida todavía no se haya anotado.
+  if (nds.isRealSave(final)) {
+    const user = username();
+    const known = await nds.getSave(session.id, user);
+    if (!known || known.length !== final!.length || known.some((b, i) => b !== final![i])) {
+      await nds.putSave(session.id, user, final!);
+      void ndsUpload(session.id, final!, false);
+    }
+  }
+  setHub(true);
+}
+
+async function startNds(rom: sync.RomInfo) {
+  if (starting) return;
+  starting = true;
+  try {
+    await stopGame();
+    const blob = await nds.getRom(rom.id);
+    if (!blob) {
+      ndsLocal.delete(rom.id);
+      renderPlay();
+      return;
+    }
+    const user = username();
+    gameCode = rom.id;
+    say('Revisando la partida de tu cuenta…');
+    let save = (await nds.getSave(rom.id, user)) ?? null;
+    let forceUpload = false;
+    const st = sync.getState(rom.id);
+    try {
+      const remote = await sync.remoteVersion(rom.id);
+      if (remote !== null && remote !== st.base) {
+        const localChanged = nds.isRealSave(save) && (st.dirty || st.base === null);
+        if (
+          localChanged &&
+          !confirm(
+            'Tu cuenta tiene una partida distinta a la de este dispositivo, y acá hay progreso sin subir.\n\n' +
+              'Aceptar: usar la de tu cuenta (se pierde lo de este dispositivo).\n' +
+              'Cancelar: quedarse con la de este dispositivo y subirla.',
+          )
+        ) {
+          forceUpload = true;
+        } else {
+          const got = await sync.download(rom.id);
+          if (got) {
+            save = got.data;
+            await nds.putSave(rom.id, user, got.data);
+            sync.setState(rom.id, { base: got.savedAt, dirty: false });
+            toast('☁ Partida traída de tu cuenta');
+          }
+        }
+      }
+    } catch (e) {
+      if (e instanceof sync.SyncError && e.kind === 'auth') throw e;
+      toast(sync.describe(e));
+    }
+
+    const boot = save;
+    $('nds-title').textContent = rom.title;
+    ndsStage.hidden = false;
+    ndsSession = nds.start({
+      host: $('nds-host'),
+      id: rom.id,
+      rom: blob,
+      save: boot,
+      muted,
+      onSave: (data) => void onNdsSaved(rom.id, data),
+      onStart: () => {
+        // Subir lo que este dispositivo tenga pendiente.
+        const now = sync.getState(rom.id);
+        if (boot && (forceUpload || now.dirty || now.base === null)) void ndsUpload(rom.id, boot, forceUpload);
+      },
+    });
+    setHub(false);
+    document.title = `${rom.title} · WabGBA`;
+  } catch (e) {
+    if (e instanceof sync.SyncError && e.kind === 'auth') {
+      sync.clearSession();
+      showLogin(sync.describe(e));
+    } else throw e;
+  } finally {
+    starting = false;
+  }
+}
+
+/** Empezar de cero la partida de DS que está abierta. */
+async function resetNds() {
+  const id = ndsSession?.id;
+  if (!id || busy) return;
+  const rom = catalog.find((r) => r.id === id) ?? null;
+  if (
+    !confirm(
+      `¿Reiniciar tu partida de "${rom?.title ?? id}" desde cero?\n\n` +
+        'Se borra la partida guardada de este juego, acá y en tu cuenta. No se puede deshacer.',
+    )
+  ) {
+    return;
+  }
+  busy = true;
+  try {
+    // Se cierra sin anotar la partida que estaba abierta.
+    const session = ndsSession;
+    ndsSession = null;
+    session?.stop();
+    ndsStage.hidden = true;
+    setHub(true);
+    say('Borrando la partida…');
+    if (shared()) await sync.resetRun(id);
+    await nds.dropSave(id, username());
+    sync.clearState(id);
+    playersCache = null;
+    await loadFeed();
+    busy = false;
+    toast('Partida reiniciada. ¡Suerte esta vez!');
+    if (rom) await startNds(rom);
+  } catch (e) {
+    onCloudError(e);
+  } finally {
+    busy = false;
+  }
 }
 
 let starting = false;
@@ -1788,6 +2020,10 @@ async function startGameInner(name: string) {
 
 /** Empezar de cero: borra la partida (acá y en la cuenta), sus bajas y sus logros, y arranca el juego. */
 async function resetRun() {
+  if (ndsSession) {
+    await resetNds();
+    return;
+  }
   const rom = activeRom();
   if (!rom || busy) return;
   const title = titleOf(rom);
@@ -2010,6 +2246,15 @@ function setupTouch() {
 function setupUi() {
   // Barra del juego
   $('btn-menu').onclick = () => void openHub();
+  $('nds-menu').onclick = () => void openHub();
+  // Qué ROMs de DS ya están descargadas en este navegador.
+  void nds
+    .localRoms()
+    .then((ids) => {
+      ndsLocal = new Set(ids);
+      if (!hub.hidden && tab === 'play' && !busy) renderPlay();
+    })
+    .catch(() => {});
   btnPause.onclick = () => setPaused(!paused);
   btnSpeed.onclick = () => {
     speed = speed === 1 ? 2 : speed === 2 ? 4 : 1;

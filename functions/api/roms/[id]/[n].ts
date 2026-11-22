@@ -2,7 +2,7 @@
 //
 //   GET /api/roms/<id>/<n>  -> bytes (cuentas de la sala de esa ROM)
 //   PUT /api/roms/<id>/<n>  -> lo guarda (sólo quien administra el sitio)
-import { canEnter, currentUser, database, json, roomOfGame, type Context } from '../../../../server/lib';
+import { canEnter, chunkStore, currentUser, database, json, roomOfGame, type Context } from '../../../../server/lib';
 
 const CHUNK_BYTES = 1024 * 1024;
 
@@ -20,11 +20,13 @@ export async function onRequest({ request, env, params }: Context): Promise<Resp
     // Sólo descargan la ROM quienes están en su sala.
     const room = await roomOfGame(db, id);
     if (!room || !(await canEnter(db, user, room))) return json({ error: 'not-found' }, 404);
-    const row = await db
-      .prepare(
-        'SELECT c.data AS data FROM rom_chunks c JOIN roms r ON r.id = c.rom_id ' +
-          'WHERE c.rom_id = ? AND c.n = ? AND r.ready = 1',
-      )
+    const rom = await db
+      .prepare('SELECT console FROM roms WHERE id = ? AND ready = 1')
+      .bind(id)
+      .first<{ console: string }>();
+    if (!rom) return json({ error: 'not-found' }, 404);
+    const row = await (await chunkStore(env, rom.console))
+      .prepare('SELECT data FROM rom_chunks WHERE rom_id = ? AND n = ?')
       .bind(id, n)
       .first<{ data: ArrayBuffer | number[] }>();
     if (!row) return json({ error: 'not-found' }, 404);
@@ -36,13 +38,16 @@ export async function onRequest({ request, env, params }: Context): Promise<Resp
 
   if (request.method === 'PUT') {
     if (!user.admin) return json({ error: 'forbidden' }, 403);
-    const rom = await db.prepare('SELECT chunks FROM roms WHERE id = ?').bind(id).first<{ chunks: number }>();
+    const rom = await db
+      .prepare('SELECT chunks, console FROM roms WHERE id = ?')
+      .bind(id)
+      .first<{ chunks: number; console: string }>();
     if (!rom) return json({ error: 'not-found' }, 404);
     const body = await request.arrayBuffer();
     if (n >= rom.chunks || body.byteLength === 0 || body.byteLength > CHUNK_BYTES) {
       return json({ error: 'bad-size' }, 413);
     }
-    await db
+    await (await chunkStore(env, rom.console))
       .prepare(
         'INSERT INTO rom_chunks (rom_id, n, data) VALUES (?1, ?2, ?3) ' +
           'ON CONFLICT(rom_id, n) DO UPDATE SET data = ?3',
