@@ -12,6 +12,8 @@
     <style>
       html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
       #game { width: 100%; height: 100%; }
+      /* La barra del emulador no se usa: los botones están en la barra de WabGBA. */
+      .ejs_menu_bar { display: none !important; }
     </style>
   </head>
   <body>
@@ -112,6 +114,20 @@
         gm.quickSave = () => false;
         gm.quickLoad = () => {};
         gm.loadState = () => {};
+        const emu = window.EJS_emulator;
+        // El mouse queda libre, y la pantalla de abajo se toca donde se hace clic (sin
+        // un cursor que haya que arrastrar).
+        const set = (option, value) => {
+          try {
+            emu.changeSettingOption(option, value);
+          } catch (e) {
+            /* esa opción no existe en este dispositivo */
+          }
+        };
+        set('lockMouse', 'disabled');
+        emu.enableMouseLock = false;
+        set('desmume_pointer_type', 'touch');
+        set('menu-bar-button', 'hidden');
         boot.onStart(gm.getSaveFilePath());
       };
     </script>

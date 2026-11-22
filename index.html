@@ -42,11 +42,17 @@
     <!-- El menú -->
     <!-- Nintendo DS: el juego corre en un marco aparte que ocupa toda la pantalla. -->
     <div id="nds-stage" hidden>
+      <div id="nds-host"></div>
       <div id="nds-bar">
         <button id="nds-menu" class="px-btn" title="Menú: juegos, historial, logros y participantes">☰ MENÚ</button>
-        <span id="nds-title"></span>
+        <button id="nds-pause" class="px-btn ghost" title="Pausar o seguir">⏸</button>
+        <button id="nds-speed" class="px-btn ghost" title="Velocidad">x1</button>
+        <span class="spacer"></span>
+        <button id="nds-mute" class="px-btn ghost" title="Silenciar">🔊</button>
+        <button id="nds-layout" class="px-btn ghost" title="Pantallas lado a lado o una sobre otra">◫</button>
+        <button id="nds-controls" class="px-btn ghost" title="Configurar teclas y mando">🎮</button>
+        <button id="nds-full" class="px-btn ghost" title="Pantalla completa">⛶</button>
       </div>
-      <div id="nds-host"></div>
     </div>
 
     <div id="hub" class="scene">

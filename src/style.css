@@ -256,7 +256,8 @@ button.link:hover {
   touch-action: none;
 }
 
-#toolbar {
+#toolbar,
+#nds-bar {
   display: flex;
   gap: 8px;
   align-items: center;
@@ -268,7 +269,8 @@ button.link:hover {
   scrollbar-width: none;
 }
 
-#toolbar .spacer {
+#toolbar .spacer,
+#nds-bar .spacer {
   flex: 1;
 }
 
@@ -1851,6 +1853,7 @@ button.link.dark:hover {
 #nds-stage {
   position: fixed;
   inset: 0;
+  height: 100dvh;
   z-index: 5;
   display: flex;
   flex-direction: column;
@@ -1859,22 +1862,6 @@ button.link.dark:hover {
 
 #nds-stage[hidden] {
   display: none;
-}
-
-#nds-bar {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 6px 10px;
-  background: #1a1440;
-  color: #fff;
-}
-
-#nds-title {
-  font-size: 15px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 #nds-host {

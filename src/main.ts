@@ -795,7 +795,8 @@ let tab: Tab = 'play';
 
 function setHub(open: boolean) {
   hub.hidden = !open;
-  ndsSession?.setPaused(open);
+  ndsSession?.setPaused(open || ndsPaused);
+  if (!open) ndsSession?.focus();
   if (running) {
     if (open) emu.pauseGame();
     else if (!paused) emu.resumeGame();
@@ -1756,6 +1757,54 @@ const NDS_PREFIX = 'nds:';
 const ndsStage = $('nds-stage');
 let ndsSession: nds.Session | null = null;
 let ndsLocal = new Set<string>();
+let ndsPaused = false;
+let ndsSpeed = 1;
+
+/** Pone los botones de la barra de DS al día con el estado del juego. */
+function renderNdsBar() {
+  const pause = $('nds-pause');
+  pause.textContent = ndsPaused ? '▶' : '⏸';
+  pause.classList.toggle('on', ndsPaused);
+  const fast = $('nds-speed');
+  fast.textContent = `x${ndsSpeed}`;
+  fast.classList.toggle('on', ndsSpeed > 1);
+  const mute = $('nds-mute');
+  mute.textContent = muted ? '🔇' : '🔊';
+  mute.classList.toggle('on', muted);
+}
+
+function setupNdsBar() {
+  $('nds-menu').onclick = () => void openHub();
+  $('nds-pause').onclick = () => {
+    ndsPaused = !ndsPaused;
+    ndsSession?.setPaused(ndsPaused);
+    renderNdsBar();
+  };
+  $('nds-speed').onclick = () => {
+    ndsSpeed = ndsSpeed === 1 ? 2 : ndsSpeed === 2 ? 4 : 1;
+    ndsSession?.setSpeed(ndsSpeed);
+    renderNdsBar();
+  };
+  $('nds-mute').onclick = () => {
+    muted = !muted;
+    ndsSession?.setMuted(muted);
+    applyVolume();
+    renderNdsBar();
+  };
+  $('nds-layout').onclick = () => ndsSession?.toggleLayout();
+  $('nds-controls').onclick = () => ndsSession?.openControls();
+  $('nds-full').onclick = () => {
+    if (document.fullscreenElement) void document.exitFullscreen();
+    else void ndsStage.requestFullscreen?.();
+  };
+  // Después de tocar un botón, el teclado vuelve al juego.
+  for (const b of document.querySelectorAll<HTMLElement>('#nds-bar button')) {
+    b.addEventListener('click', () => {
+      b.blur();
+      if (b.id !== 'nds-menu' && b.id !== 'nds-controls') ndsSession?.focus();
+    });
+  }
+}
 
 /** Sube a la biblioteca una ROM de DS elegida del disco (cuenta administradora). */
 async function addNdsRom(file: File) {
@@ -1889,7 +1938,9 @@ async function startNds(rom: sync.RomInfo) {
     }
 
     const boot = save;
-    $('nds-title').textContent = rom.title;
+    ndsPaused = false;
+    ndsSpeed = 1;
+    renderNdsBar();
     ndsStage.hidden = false;
     ndsSession = nds.start({
       host: $('nds-host'),
@@ -2246,7 +2297,7 @@ function setupTouch() {
 function setupUi() {
   // Barra del juego
   $('btn-menu').onclick = () => void openHub();
-  $('nds-menu').onclick = () => void openHub();
+  setupNdsBar();
   // Qué ROMs de DS ya están descargadas en este navegador.
   void nds
     .localRoms()

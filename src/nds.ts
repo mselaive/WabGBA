@@ -87,7 +87,15 @@ interface Ejs {
   pause(): void;
   play(): void;
   setVolume(volume: number): void;
-  gameManager?: { getSaveFile(flush?: boolean): Uint8Array | null };
+  changeSettingOption(option: string, value: string): void;
+  controlMenu?: HTMLElement;
+  settings?: Record<string, string>;
+  elements?: { parent?: HTMLElement };
+  gameManager?: {
+    getSaveFile(flush?: boolean): Uint8Array | null;
+    setFastForwardRatio(ratio: number): void;
+    toggleFastForward(active: number): void;
+  };
 }
 
 export interface Session {
@@ -95,6 +103,14 @@ export interface Session {
   /** Pone el juego en pausa o lo reanuda. */
   setPaused(paused: boolean): void;
   setMuted(muted: boolean): void;
+  /** Velocidad del juego: 1 es la normal. */
+  setSpeed(speed: number): void;
+  /** Alterna entre pantallas lado a lado y una sobre otra. */
+  toggleLayout(): void;
+  /** Abre la configuración de teclas y mando del emulador. */
+  openControls(): void;
+  /** Devuelve el teclado al juego (después de tocar un botón de afuera). */
+  focus(): void;
   /** La partida tal como está ahora en el cartucho (null si el juego todavía no arrancó). */
   save(): Uint8Array | null;
   /** Cierra el juego y devuelve la última partida. */
@@ -121,6 +137,7 @@ export function start(options: StartOptions): Session {
   frame.title = 'Nintendo DS';
   frame.allow = 'autoplay; fullscreen; gamepad';
   let ejs: Ejs | null = null;
+  let layout = wide ? 'left/right' : 'top/bottom';
   let last: Uint8Array | null = options.save;
   let pending: Uint8Array | null = null;
 
@@ -128,7 +145,7 @@ export function start(options: StartOptions): Session {
     rom: options.rom,
     name: options.id,
     save: options.save,
-    layout: wide ? 'left/right' : 'top/bottom',
+    layout,
     muted: options.muted,
     onStart: () => {
       ejs = (frame.contentWindow as unknown as { EJS_emulator: Ejs }).EJS_emulator;
@@ -170,6 +187,26 @@ export function start(options: StartOptions): Session {
     },
     setMuted(muted) {
       ejs?.setVolume(muted ? 0 : 0.7);
+    },
+    setSpeed(speed) {
+      const gm = ejs?.started ? ejs.gameManager : null;
+      if (!gm) return;
+      if (speed > 1) gm.setFastForwardRatio(speed);
+      gm.toggleFastForward(speed > 1 ? 1 : 0);
+    },
+    toggleLayout() {
+      if (!ejs?.started) return;
+      // El emulador recuerda la disposición de la última vez: se parte de la que tiene puesta.
+      const current = ejs.settings?.desmume_screens_layout ?? layout;
+      layout = current === 'left/right' ? 'top/bottom' : 'left/right';
+      ejs.changeSettingOption('desmume_screens_layout', layout);
+    },
+    openControls() {
+      if (ejs?.started && ejs.controlMenu) ejs.controlMenu.style.display = '';
+    },
+    focus() {
+      frame.contentWindow?.focus();
+      ejs?.elements?.parent?.focus();
     },
     save: () => read(true),
     stop() {
