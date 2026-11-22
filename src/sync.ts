@@ -244,11 +244,28 @@ export async function listRoms(): Promise<RomInfo[]> {
 }
 
 /** Baja una ROM de la biblioteca, trozo por trozo. */
+/**
+ * Un pedido de un trozo de ROM, con reintentos: son muchos pedidos seguidos y alguno puede
+ * fallar por un problema pasajero del servidor o de la conexión.
+ */
+async function steady(path: string, init?: () => RequestInit): Promise<Response> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      const res = await call(path, init?.());
+      if (res.status < 500 && res.status !== 429) return res;
+      if (attempt >= 5) return res;
+    } catch (e) {
+      if (attempt >= 5) throw e;
+    }
+    await new Promise((r) => setTimeout(r, 1000 * 2 ** attempt));
+  }
+}
+
 export async function downloadRom(rom: RomInfo, onProgress: (done: number, total: number) => void): Promise<Uint8Array> {
   const data = new Uint8Array(rom.size);
   let offset = 0;
   for (let n = 0; n < rom.chunks; n++) {
-    const res = await call(`roms/${encodeURIComponent(rom.id)}/${n}`);
+    const res = await steady(`roms/${encodeURIComponent(rom.id)}/${n}`);
     if (res.status === 401) throw new SyncError('auth');
     if (!res.ok || isJson(res)) throw new SyncError('server');
     const chunk = new Uint8Array(await res.arrayBuffer());
@@ -272,24 +289,28 @@ export async function uploadRom(
   const size = data instanceof Blob ? data.size : data.length;
   const chunks = Math.ceil(size / CHUNK_BYTES);
   const path = `roms/${encodeURIComponent(id)}`;
-  await okJson(
-    await call(path, {
+  const begun = await okJson(
+    await steady(path, () => ({
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ title, size, chunks, room: roomId, console }),
-    }),
+    })),
   );
+  // Si una subida anterior quedó a medias, el servidor dice qué trozos ya tiene.
+  const have = new Set(((await begun.json()) as { have?: number[] }).have ?? []);
   for (let n = 0; n < chunks; n++) {
-    await okJson(
-      await call(`${path}/${n}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/octet-stream' },
-        body: data.slice(n * CHUNK_BYTES, (n + 1) * CHUNK_BYTES),
-      }),
-    );
+    if (!have.has(n)) {
+      await okJson(
+        await steady(`${path}/${n}`, () => ({
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/octet-stream' },
+          body: data.slice(n * CHUNK_BYTES, (n + 1) * CHUNK_BYTES),
+        })),
+      );
+    }
     onProgress(n + 1, chunks);
   }
-  await okJson(await call(path, { method: 'POST' }));
+  await okJson(await steady(path, () => ({ method: 'POST' })));
 }
 
 export async function deleteRom(id: string): Promise<void> {

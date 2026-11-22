@@ -1,6 +1,7 @@
 // Alta y baja de una ROM en la biblioteca de una sala. Sólo quien administra el sitio.
 //
-//   PUT    /api/roms/<id> { title, size, chunks, room, console }  -> empieza la subida (borra lo que hubiera)
+//   PUT    /api/roms/<id> { title, size, chunks, room, console }  -> empieza la subida, o la retoma si quedó
+//                                                            a medias: responde { have: [trozos que ya están] }
 //   POST   /api/roms/<id>                                -> la publica, si llegaron todos los trozos
 //   DELETE /api/roms/<id>                                -> la quita
 import { chunkStore, currentUser, database, json, readBody, roomById, roomOfGame, type Context } from '../../../../server/lib';
@@ -33,7 +34,20 @@ export async function onRequest({ request, env, params }: Context): Promise<Resp
     const owner = await roomOfGame(db, id);
     if (owner && owner.id !== room.id) return json({ error: 'rom-elsewhere', room: owner.name }, 409);
 
-    await (await chunkStore(env, console)).prepare('DELETE FROM rom_chunks WHERE rom_id = ?').bind(id).run();
+    // Una subida de la misma ROM que quedó a medias se retoma: se conserva lo que ya llegó.
+    const store = await chunkStore(env, console);
+    const before = await db
+      .prepare('SELECT size, chunks, ready, console FROM roms WHERE id = ?')
+      .bind(id)
+      .first<{ size: number; chunks: number; ready: number; console: string }>();
+    if (before && !before.ready && before.size === size && before.chunks === chunks && before.console === console) {
+      const { results } = await store.prepare('SELECT n FROM rom_chunks WHERE rom_id = ?').bind(id).all<{ n: number }>();
+      await db.prepare('UPDATE roms SET title = ? WHERE id = ?').bind(title, id).run();
+      await db.prepare('INSERT OR REPLACE INTO room_roms (rom_id, room_id) VALUES (?, ?)').bind(id, room.id).run();
+      return json({ ok: true, have: results.map((r) => r.n) });
+    }
+
+    await store.prepare('DELETE FROM rom_chunks WHERE rom_id = ?').bind(id).run();
     await db.batch([
       db.prepare('DELETE FROM rom_chunks WHERE rom_id = ?').bind(id),
       db
@@ -44,7 +58,7 @@ export async function onRequest({ request, env, params }: Context): Promise<Resp
         .bind(id, title, size, chunks, Date.now(), console),
       db.prepare('INSERT OR REPLACE INTO room_roms (rom_id, room_id) VALUES (?, ?)').bind(id, room.id),
     ]);
-    return json({ ok: true });
+    return json({ ok: true, have: [] });
   }
 
   if (request.method === 'POST') {
